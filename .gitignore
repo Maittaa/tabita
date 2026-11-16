@@ -1,0 +1,21 @@
+# Gradle / Android Studio
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Подпись — только в архиве, не в git
+keystore/
+*.jks
+*.keystore
+keystore.properties
+
+# Сборки
+*.apk
+*.aab

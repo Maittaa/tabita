@@ -1,0 +1,10 @@
+<resources>
+    <!-- День/ночь: окно до загрузки Compose — в цвет темы; системе запрещено «затемнять» приложение поверх своей тёмной темы -->
+    <style name="Theme.Tabita" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

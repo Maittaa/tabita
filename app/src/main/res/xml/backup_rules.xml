@@ -1,0 +1,4 @@
+<full-backup-content>
+    <!-- настройки (PIN, ключ ИИ) не попадают в облачную копию Android -->
+    <exclude domain="sharedpref" path="settings.xml" />
+</full-backup-content>

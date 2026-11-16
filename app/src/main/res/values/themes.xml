@@ -1,0 +1,7 @@
+<resources>
+    <!-- Android 9: тёмной темы на уровне системы нет; для 10+ см. values-v29 -->
+    <style name="Theme.Tabita" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
