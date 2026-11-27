@@ -22,6 +22,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +43,26 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 const val GRID_COLS = 4
+/** 5.43: число колонок сетки — от 4 до 6 (Prefs.gridCols). */
+val GRID_COLS_RANGE = 4..6
+/** Сколько колонок сейчас у сетки — для плиток, которым надо ужаться. */
+val LocalGridCols = androidx.compose.runtime.compositionLocalOf { GRID_COLS }
+
+/**
+ * Ширина положения в клетках. 5.46: как в лаунчере — размеры в клетках постоянные (широкая 4×2, половина 2×2,
+ * мини 1×2), а клетка уменьшается с ростом числа колонок; полная — во всю ширину.
+ */
+fun TileSize.cols(cols: Int): Int = when (this) { TileSize.FULL -> cols; TileSize.WIDE -> minOf(4, cols); TileSize.HALF -> 2; TileSize.MINI -> 1 }
+
+/** Положение по ширине в клетках при ресайзе: 1 — мини, 2 (и 3 при 5–6 колонках) — половина, шире — широкая/полная. */
+fun sizeForWidth(nw: Int, cols: Int): TileSize? = when {
+    nw <= 1 -> TileSize.MINI
+    nw <= 2 || (nw == 3 && cols > 4) -> TileSize.HALF
+    else -> null
+}
+
+/** 5.46: масштаб клетки относительно сетки в 4 колонки — высота строки и содержимое плиток. */
+fun gridScale(cols: Int) = 4f / cols.coerceIn(GRID_COLS_RANGE)
 private val OVERLAY_MARGIN = 24.dp
 val GRID_INSET = 12.dp
 
@@ -54,20 +76,37 @@ val GRID_INSET = 12.dp
 @Composable
 fun TileGrid(
     tiles: List<Repo.Tile>,
+    cols: Int = GRID_COLS,
     editing: Boolean,
     selected: String?,
     onSelect: (String?) -> Unit,
     onStartEdit: (String) -> Unit,
-    onMove: (String, Int) -> Unit,
+    /** Перенести плитку на место другой (id перетаскиваемой, id той, на которую навели). */
+    onMove: (String, String) -> Unit,
     onResize: (id: String, w: Int, h: Int, small: Boolean) -> Unit,
     onOpen: (String) -> Unit,
     full: @Composable (String) -> Unit,
     compact: @Composable (id: String, w: Int, h: Int) -> Unit,
     modifier: Modifier = Modifier,
+    /** Плитка, которая время от времени «покачивается» — подсказка, что плитки можно двигать (5.36). */
+    hintId: String? = null,
 ) {
+    val wiggle = remember { androidx.compose.animation.core.Animatable(0f) }
+    androidx.compose.runtime.LaunchedEffect(hintId) {
+        if (hintId == null) { wiggle.snapTo(0f); return@LaunchedEffect }
+        kotlinx.coroutines.delay(1200)
+        while (true) {
+            // как значок на рабочем столе Pixel, который зажали: лёгкое покачивание и снова покой
+            for (a in listOf(-1.6f, 1.6f, -1.2f, 1.2f, -0.6f, 0f)) wiggle.animateTo(a, androidx.compose.animation.core.tween(90))
+            kotlinx.coroutines.delay(3200)
+        }
+    }
     val haptic = LocalHapticFeedback.current
     val rects = remember { HashMap<String, Pair<IntOffset, IntSize>>() }
     val autoRows = remember { HashMap<String, Int>() }
+    // 5.48: кнопки внутри уменьшенных плиток — по плитке
+    val hitsMap = remember { HashMap<String, TileHits>() }
+    fun hitsOf(id: String) = hitsMap.getOrPut(id) { TileHits() }
     var dragId by remember { mutableStateOf<String?>(null) }
     var dragPos by remember { mutableStateOf(Offset.Zero) }
     val resizeStart = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
@@ -91,26 +130,32 @@ fun TileGrid(
         pulseId = id; pulseKey++
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
+    // плитка, с которой только что поменялись местами: пока центр над ней, повторно не меняем —
+    // иначе плитки разного размера меняются туда-обратно на каждом кадре (5.22.4)
+    var swapped by remember { mutableStateOf<String?>(null) }
+    val moveNow by rememberUpdatedState(onMove)
     fun dragBy(d: Offset) {
         val id = dragId ?: return
         val r = rects[id] ?: return
         dragPos += d
         val cx = dragPos.x + r.second.width / 2f; val cy = dragPos.y + r.second.height / 2f
-        val target = tilesNow.indexOfFirst { t ->
-            t.id != id && rects[t.id]?.let { (o, s) -> cx >= o.x && cx < o.x + s.width && cy >= o.y && cy < o.y + s.height } == true
-        }
-        if (target >= 0) onMove(id, target)
+        fun over(tid: String) = rects[tid]?.let { (o, s) -> cx >= o.x && cx < o.x + s.width && cy >= o.y && cy < o.y + s.height } == true
+        swapped?.let { if (!over(it)) swapped = null }
+        val target = tilesNow.firstOrNull { t -> t.id != id && t.id != swapped && over(t.id) } ?: return
+        swapped = target.id
+        moveNow(id, target.id)
     }
-    fun endDrag() { dragId = null }
+    fun endDrag() { dragId = null; swapped = null }
 
     SubcomposeLayout(modifier.fillMaxWidth()) { cs ->
         val gap = 8.dp.roundToPx()
         val margin = OVERLAY_MARGIN.roundToPx()  // слой жестов шире плитки — чтобы ручки за краем ловили касания
-        val unit = 52.dp.roundToPx()
+        // 5.46: высота строки уменьшается вместе с шириной колонки
+        val unit = (52.dp * gridScale(cols)).roundToPx()
         val inset = GRID_INSET.roundToPx()   // поле вокруг плиток: в нём ручки крайних плиток ловят касания
         val outerW = cs.maxWidth
         val width = outerW - 2 * inset
-        val cell = (width - gap * (GRID_COLS - 1)) / GRID_COLS
+        val cell = (width - gap * (cols - 1)) / cols
         fun wPx(w: Int) = cell * w + gap * (w - 1)
         fun hPx(h: Int) = unit * h + gap * (h - 1)
         fun rowsFor(px: Int) = maxOf(1, ceil((px + gap).toDouble() / (unit + gap)).toInt())
@@ -124,10 +169,21 @@ fun TileGrid(
                     .map { it.measure(Constraints(minWidth = width, maxWidth = width)) }
                 val rows = rowsFor(ps.maxOfOrNull { it.height } ?: unit)
                 autoRows[t.id] = rows
-                Spec(t.id, GRID_COLS, maxOf(rows, t.h), true, ps)
+                Spec(t.id, cols, maxOf(rows, t.h), true, ps)
             } else {
-                val w = t.w.coerceIn(1, GRID_COLS); val h = t.h.coerceIn(1, 12)
-                val ps = subcompose("s_" + t.id) { compact(t.id, w, h) }.map { it.measure(Constraints.fixed(wPx(w), hPx(h))) }
+                // в хранилище положение записано по 4 колонкам; на экране ширина — от текущего числа колонок
+                // 5.47: размер в клетках — как задан (ширина не больше числа колонок, высота 1–3)
+                val w = t.w.coerceIn(1, cols); val h = t.h.coerceIn(1, Repo.Tile.MAX_H)
+                val ps = subcompose("s_" + t.id) {
+                    // 5.46: содержимое уменьшенных плиток масштабируется целиком (отступы, иконки, текст) — как клетка
+                    val d = androidx.compose.ui.platform.LocalDensity.current
+                    val k = gridScale(cols)
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        LocalGridCols provides cols,
+                        LocalTileHits provides hitsOf(t.id),
+                        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(d.density * k, d.fontScale),
+                    ) { compact(t.id, w, h) }
+                }.map { it.measure(Constraints.fixed(wPx(w), hPx(h))) }
                 Spec(t.id, w, h, false, ps)
             }
         }
@@ -149,7 +205,7 @@ fun TileGrid(
             }
             val occ = ArrayList<BooleanArray>()
             fun free(r: Int, c: Int, w: Int, h: Int): Boolean {
-                if (c + w > GRID_COLS) return false
+                if (c + w > cols) return false
                 for (rr in r until r + h) { if (rr >= occ.size) continue; for (cc in c until c + w) if (occ[rr][cc]) return false }
                 return true
             }
@@ -157,9 +213,9 @@ fun TileGrid(
                 val s = specs[i]
                 var r = 0
                 while (true) {
-                    val c = (0..GRID_COLS - s.w).firstOrNull { free(r, it, s.w, s.h) }
+                    val c = (0..cols - s.w).firstOrNull { free(r, it, s.w, s.h) }
                     if (c != null) {
-                        while (occ.size < r + s.h) occ.add(BooleanArray(GRID_COLS))
+                        while (occ.size < r + s.h) occ.add(BooleanArray(cols))
                         for (rr in r until r + s.h) for (cc in c until c + s.w) occ[rr][cc] = true
                         offsets[s.id] = IntOffset(c * (cell + gap), y + r * (unit + gap)); heights[s.id] = hPx(s.h)
                         break
@@ -182,7 +238,15 @@ fun TileGrid(
             val ov = subcompose("ov_" + s.id + "_" + s.isFull) {
                 TileOverlay(
                     full = s.isFull, editing = editing, selected = sel,
-                    onTap = { if (editing) onSelect(s.id) else if (!s.isFull) onOpen(s.id) },
+                    onTap = { p ->
+                        // 5.48: нажатие на кнопку внутри плитки — действие, иначе открыть плитку
+                        val hit = if (!editing && !s.isFull) hitsOf(s.id).at(p) else null
+                        when {
+                            editing -> onSelect(s.id)
+                            hit != null -> { hit(); haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove) }
+                            !s.isFull -> onOpen(s.id)
+                        }
+                    },
                     onLongPress = { onStartEdit(s.id); startDrag(s.id) },
                     onDragStart = { onSelect(s.id); startDrag(s.id) },
                     onDrag = ::dragBy, onDragEnd = ::endDrag,
@@ -190,17 +254,16 @@ fun TileGrid(
                     onResize = { dx, dy, horiz, vert ->
                         val (w0, h0) = resizeStart[s.id] ?: (s.w to s.h)
                         // horiz/vert: +1 — правый/нижний край, −1 — левый/верхний (тянем наружу — больше)
-                        val nw = if (horiz != 0) ((wPx(w0) + dx * horiz + gap) / (cell + gap)).roundToInt().coerceIn(1, GRID_COLS) else w0
+                        val nw = if (horiz != 0) ((wPx(w0) + dx * horiz + gap) / (cell + gap)).roundToInt().coerceIn(1, cols) else w0
                         val nh = if (vert != 0) ((hPx(h0) + dy * vert + gap) / (unit + gap)).roundToInt().coerceIn(1, 40) else h0
-                        // размер «перескакивает» только между четырьмя положениями
-                        val cur = if (s.isFull) TileSize.FULL else Repo.Tile(s.id, s.w, s.h, true).size
-                        val target = when {
-                            nw <= 1 -> TileSize.MINI
-                            nw == 2 -> TileSize.HALF
-                            cur == TileSize.FULL -> if (vert != 0 && nh < h0 - 1) TileSize.WIDE else TileSize.FULL
-                            else -> if (vert != 0 && nh >= 4) TileSize.FULL else TileSize.WIDE
+                        // 5.47: размер меняется по одной клетке; выше 3 строк — развернуть, развёрнутую тянуть вверх/внутрь — свернуть
+                        if (s.isFull) {
+                            if ((vert != 0 && nh < h0 - 1) || (horiz != 0 && nw < cols)) onResize(s.id, if (horiz != 0) nw else cols, Repo.Tile.MAX_H, true)
+                        } else if (vert != 0 && nh > Repo.Tile.MAX_H) {
+                            onResize(s.id, 0, 0, false)
+                        } else if (nw != s.w || nh.coerceAtMost(Repo.Tile.MAX_H) != s.h) {
+                            onResize(s.id, nw, nh.coerceIn(1, Repo.Tile.MAX_H), true)
                         }
-                        if (target != cur) onResize(s.id, target.w, target.h, target.small)
                     },
                 )
             }.map { it.measure(Constraints.fixed(size.width + 2 * margin, size.height + 2 * margin)) }
@@ -211,8 +274,9 @@ fun TileGrid(
                 val o = (if (id == dragId) IntOffset(dragPos.x.roundToInt(), dragPos.y.roundToInt()) else off) + IntOffset(inset, inset)
                 val z = when (id) { dragId -> 3f; selected -> 2f; else -> 0f }
                 val layer: androidx.compose.ui.graphics.GraphicsLayerScope.() -> Unit = {
-                    val sc = (if (id == pulseId) pulse.value else 1f) * (if (id == dragId) lift else 1f)
-                    scaleX = sc; scaleY = sc
+                    val w = if (id == hintId) wiggle.value else 0f
+                    val sc = (if (id == pulseId) pulse.value else 1f) * (if (id == dragId) lift else 1f) * (1f + Math.abs(w) * 0.012f)
+                    scaleX = sc; scaleY = sc; rotationZ = w
                 }
                 layers.first.forEach { it.placeWithLayer(o, z, layer) }
                 layers.second.forEach { it.placeWithLayer(o, z, layer) }
@@ -246,7 +310,7 @@ private fun Modifier.outset(d: androidx.compose.ui.unit.Dp) = this.then(
 @Composable
 private fun TileOverlay(
     full: Boolean, editing: Boolean, selected: Boolean,
-    onTap: () -> Unit, onLongPress: () -> Unit,
+    onTap: (Offset) -> Unit, onLongPress: () -> Unit,
     onDragStart: () -> Unit, onDrag: (Offset) -> Unit, onDragEnd: () -> Unit,
     onResizeStart: () -> Unit, onResize: (dx: Float, dy: Float, horiz: Int, vert: Int) -> Unit,
 ) {
@@ -260,13 +324,15 @@ private fun TileOverlay(
     val resize by rememberUpdatedState(onResize)
     val frameAlpha by androidx.compose.animation.core.animateFloatAsState(if (editing && selected) 1f else 0f, label = "frame")
 
+    // точка нажатия — в координатах окна, чтобы сравнить с границами кнопок внутри плитки
+    var origin by remember { mutableStateOf(Offset.Zero) }
     Box(Modifier.fillMaxSize()) {
-      Box(Modifier.fillMaxSize().padding(OVERLAY_MARGIN)) {
+      Box(Modifier.fillMaxSize().padding(OVERLAY_MARGIN).onGloballyPositioned { origin = it.positionInRoot() }) {
         when {
             // режим правки: выбранную тащим сразу, остальные — после долгого нажатия (страница прокручивается)
             editing -> Box(
                 Modifier.fillMaxSize()
-                    .pointerInput(Unit) { detectTapGestures(onTap = { tap() }) }
+                    .pointerInput(Unit) { detectTapGestures(onTap = { tap(origin + it) }) }
                     .pointerInput(selected) {
                         if (selected) detectDragGestures(onDragStart = { dStart() }, onDragEnd = { dEnd() }, onDragCancel = { dEnd() }) { ch, d ->
                             ch.consume(); drag(d)
@@ -278,7 +344,7 @@ private fun TileOverlay(
             // краткая плитка: нажатие — подробно, долгое нажатие — правка
             !full -> Box(
                 Modifier.fillMaxSize()
-                    .pointerInput(Unit) { detectTapGestures(onTap = { tap() }) }
+                    .pointerInput(Unit) { detectTapGestures(onTap = { tap(origin + it) }) }
                     .pointerInput(Unit) {
                         detectDragGesturesAfterLongPress(onDragStart = { long() }, onDragEnd = { dEnd() }, onDragCancel = { dEnd() }) { ch, d ->
                             ch.consume(); drag(d)

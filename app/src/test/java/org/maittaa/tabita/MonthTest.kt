@@ -104,10 +104,12 @@ class MonthTest {
         assertTrue(d.isBonus(d.metrics.first { it.key == "tr" }))
     }
 
-    @Test fun recordStreakForgivesOneSkipPerWeek() {
+    @Test fun recordStreakUsesFreezes() {
+        // 3–9 заполнены (7 дней → 1 заморозка), 10-е пропущено, 11–14 заполнены
         val e = (3..14).filter { it != 10 }.associate { LocalDate.of(2026, 11, it).key() to mapOf("rate" to "6") }
         val d = MonthData(template, e, LocalDate.of(2026, 11, 1), MonthCfg(), today)
         assertEquals(11 to true, d.recordStreak(today))
+        assertEquals(0, d.streak(today).freezes)
         // сегодня ещё не заполнено — серия не рвётся
         val d2 = MonthData(template, e - today.key(), LocalDate.of(2026, 11, 1), MonthCfg(), today)
         assertEquals(10, d2.recordStreak(today).first)

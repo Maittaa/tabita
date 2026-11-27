@@ -102,7 +102,8 @@ class WellbeingTest {
 
     @Test fun statOrder() {
         val cards = listOf("a", "b", "c", "d").map { NoteCard(it, "2026-11") }
-        assertEquals(listOf("c", "a", "b", "d"), ordered(cards, listOf("c", "a")).map { it.key })
+        // 5.19: новая карточка встаёт после своего соседа по умолчанию (b — после a, d — после c)
+        assertEquals(listOf("c", "d", "a", "b"), ordered(cards, listOf("c", "a")).map { it.key })
         assertEquals(listOf("a", "b", "c", "d"), ordered(cards, emptyList()).map { it.key })
         val p = Prefs(ApplicationProvider.getApplicationContext())
         p.statOrder = listOf("x", "y"); assertEquals(listOf("x", "y"), p.statOrder)

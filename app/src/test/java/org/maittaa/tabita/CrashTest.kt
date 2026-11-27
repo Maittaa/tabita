@@ -29,7 +29,7 @@ class CrashTest {
         val app = ApplicationProvider.getApplicationContext<Application>()
         Prefs(app).lang = "ru"
         ActivityScenario.launch(MainActivity::class.java).use { sc ->
-            rule.onNodeWithText("Ещё").performClick(); rule.onNodeWithText("Уведомления").performClick()
+            rule.onNodeWithText("Ещё").performScrollTo().performClick(); rule.onNodeWithText("Уведомления").performClick()
             rule.onNodeWithText("Напоминать заполнить день").performScrollTo().performClick()
             rule.waitForIdle()
             sc.onActivity { a ->
@@ -48,7 +48,7 @@ class CrashTest {
         Prefs(app).lang = "ru"
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         ActivityScenario.launch(MainActivity::class.java).use { sc ->
-            rule.onNodeWithText("Ещё").performClick(); rule.onNodeWithText("Уведомления").performClick()
+            rule.onNodeWithText("Ещё").performScrollTo().performClick(); rule.onNodeWithText("Уведомления").performClick()
             rule.onNodeWithText("Напоминать заполнить день").performScrollTo().performClick()
             rule.waitForIdle(); println("STEP reminder on")
             rule.onNodeWithText("Мотивирующие уведомления в случайное время").performScrollTo().performClick()

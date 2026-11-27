@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Rowing
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material.icons.filled.SportsSoccer
+import androidx.compose.material.icons.filled.SportsGymnastics
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.filled.AccessibilityNew
@@ -86,6 +87,8 @@ object Workouts {
         WorkoutKind("bike", "Велосипед", "Cycling", Icons.AutoMirrored.Filled.DirectionsBike, setOf(8, 9)),
         WorkoutKind("swim", "Плавание", "Swimming", Icons.Filled.Pool, setOf(73, 74, 80, 59)),
         WorkoutKind("hiit", "ВИИТ", "HIIT", Icons.Filled.Whatshot, setOf(36, 10, 26)),
+        // 5.51: аэробика дома (таймер в приложении); в Health Connect своего вида нет — приходит как «тренировка»
+        WorkoutKind("aerobics", "Аэробика", "Aerobics", Icons.Filled.SportsGymnastics, emptySet()),
         WorkoutKind("cardio", "Кардиотренажёр", "Cardio machine", Icons.Filled.Rowing, setOf(25, 54, 69, 68, 53, 46)),
         WorkoutKind("yoga", "Йога, пилатес", "Yoga, Pilates", Icons.Filled.SelfImprovement, setOf(83, 48)),
         WorkoutKind("stretch", "Растяжка", "Stretching", Icons.Filled.AccessibilityNew, setOf(71, 33, 34)),
@@ -103,6 +106,23 @@ object Workouts {
     fun syncedKey(id: String) = "$id!ex"
     fun manualKey(id: String) = "$id!exm"
 
+    /**
+     * Тяжесть нагрузки (5.25): доля минут, которая идёт в «тренировочную нагрузку» для советов и готовности.
+     * Ходьба и растяжка — активность, а не тренировка (0); силовая, бег, ВИИТ, единоборства — полная нагрузка.
+     */
+    fun load(kind: String): Double = when (kind) {
+        "strength", "run", "martial", "sport" -> 1.0
+        "hiit" -> 1.2
+        "swim", "winter", "aerobics" -> 0.8
+        "bike", "cardio" -> 0.7
+        "hike" -> 0.6
+        "dance", "other" -> 0.5
+        "yoga" -> 0.2
+        else -> 0.0   // walk, stretch
+    }
+    /** Тренировочные минуты с учётом тяжести (ходьба не считается). */
+    fun loadMin(list: List<WorkoutSession>): Double = list.sumOf { it.min * load(it.kind) }
+
     /** Засчитывается ли сессия: ходьба — только если так задано в настройках. */
     fun counts(s: WorkoutSession, countWalking: Boolean) = s.kind != "walk" || countWalking
     fun counted(list: List<WorkoutSession>, countWalking: Boolean) = list.filter { counts(it, countWalking) }.sumOf { it.min }
@@ -114,8 +134,39 @@ object Workouts {
 
     fun toJson(list: List<WorkoutSession>): String? = if (list.isEmpty()) null else JSONArray(list.map { it.toJson() }).toString()
 
-    /** Все сессии дня: с часов и вручную. */
-    fun sessions(day: Map<String, String>, id: String) = parse(day[syncedKey(id)]) + parse(day[manualKey(id)])
+    /** Все сессии дня: с часов и вручную; ручная, совпавшая по времени с записью часов, сливается с ней (5.51). */
+    fun sessions(day: Map<String, String>, id: String) = merge(parse(day[syncedKey(id)]), parse(day[manualKey(id)])).first
+
+    /** Виды, которые часы пишут общим словом: если в это время шёл таймер аэробики, берём вид из приложения. */
+    private val generic = setOf("other", "hiit", "dance", "cardio")
+
+    /**
+     * 5.51: ручные сессии (таймер аэробики, запись вручную), которые совпали по времени с записью часов
+     * (пересечение больше половины короткой), не дублируются: остаётся запись часов (пульс, дистанция),
+     * а вид, название, заметка и ощущение — из ручной. Возвращает список и индексы поглощённых ручных.
+     */
+    fun merge(synced: List<WorkoutSession>, manual: List<WorkoutSession>): Pair<List<WorkoutSession>, Set<Int>> {
+        if (manual.isEmpty() || synced.isEmpty()) return (synced + manual) to emptySet()
+        val out = synced.toMutableList()
+        val absorbed = mutableSetOf<Int>()
+        manual.forEachIndexed { mi, m ->
+            val a0 = m.start ?: return@forEachIndexed
+            val a1 = a0 + m.min * 60_000L
+            val si = out.indices.firstOrNull { i ->
+                val s = out[i]; val b0 = s.start ?: return@firstOrNull false; val b1 = b0 + s.min * 60_000L
+                minOf(a1, b1) - maxOf(a0, b0) > minOf(m.min, s.min) * 60_000L / 2
+            } ?: return@forEachIndexed
+            val s = out[si]
+            out[si] = s.copy(
+                kind = if (s.kind in generic || s.kind == m.kind) m.kind else s.kind,
+                title = m.title.ifBlank { s.title }, note = m.note.ifBlank { s.note },
+                effort = if (m.effort > 0) m.effort else s.effort,
+                hr = s.hr ?: m.hr, hrMax = s.hrMax ?: m.hrMax, hist = s.hist.ifEmpty { m.hist }, dist = s.dist ?: m.dist,
+            )
+            absorbed += mi
+        }
+        return (out + manual.filterIndexed { i, _ -> i !in absorbed }) to absorbed
+    }
 
     /**
      * Сессии из Health Connect за день → без дублей: если два приложения записали одну тренировку
@@ -142,21 +193,35 @@ object Workouts {
         list.map { kind(it.kind).title }.distinct().joinToString(", ").lowercase().replaceFirstChar { it.uppercase() }
 }
 
-/** Одна тренировка. start — эпоха в мс (для синхронизированных), src — пакет приложения-источника. */
+/**
+ * Одна тренировка. start — эпоха в мс (для синхронизированных), src — пакет приложения-источника.
+ * 5.51: пульс (средний, максимум), время на каждом значении пульса (hist: уд/мин → секунды — зоны считаются
+ * по нему при показе, поэтому меняются вместе с пульсом покоя и максимумом), дистанция в метрах и
+ * ощущение по тесту разговором (effort: 0 — не указано, 1 — легко, 2 — умеренно, 3 — интенсивно).
+ */
 data class WorkoutSession(
     val kind: String, val min: Int, val start: Long? = null, val title: String = "", val src: String = "", val note: String = "",
+    val hr: Int? = null, val hrMax: Int? = null, val hist: Map<Int, Int> = emptyMap(), val dist: Int? = null, val effort: Int = 0,
 ) {
     fun toJson(): JSONObject = JSONObject().put("k", kind).put("m", min).apply {
         start?.let { put("s", it) }
         if (title.isNotBlank()) put("t", title)
         if (src.isNotBlank()) put("src", src)
         if (note.isNotBlank()) put("n", note)
+        hr?.let { put("hr", it) }
+        hrMax?.let { put("hx", it) }
+        if (hist.isNotEmpty()) put("h", JSONObject().apply { hist.forEach { (b, s) -> put(b.toString(), s) } })
+        dist?.let { put("d", it) }
+        if (effort > 0) put("e", effort)
     }
 
     companion object {
         fun fromJson(o: JSONObject) = WorkoutSession(
             o.optString("k", "other"), o.optInt("m"), if (o.has("s")) o.getLong("s") else null,
             o.optString("t"), o.optString("src"), o.optString("n"),
+            if (o.has("hr")) o.getInt("hr") else null, if (o.has("hx")) o.getInt("hx") else null,
+            o.optJSONObject("h")?.let { h -> h.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to h.getInt(k) } }.toMap() } ?: emptyMap(),
+            if (o.has("d")) o.getInt("d") else null, o.optInt("e"),
         )
     }
 }
@@ -203,7 +268,8 @@ fun WorkoutBlock(
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 3.dp))
         }
         // список тренировок
-        val all = synced.map { it to false } + manualList.map { it to true }
+        val (merged, absorbed) = Workouts.merge(synced, manualList)
+        val all = merged.take(synced.size).map { it to false } + manualList.filterIndexed { i, _ -> i !in absorbed }.map { it to true }
         if (all.isNotEmpty()) Spacer(Modifier.height(6.dp))
         all.forEach { (s, isManual) ->
             val k = Workouts.kind(s.kind)

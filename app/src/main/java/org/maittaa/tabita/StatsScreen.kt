@@ -26,6 +26,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.ShowChart
@@ -37,6 +47,8 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material.icons.filled.ViewStream
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -69,6 +81,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.state.ToggleableState
@@ -93,8 +106,11 @@ private enum class Mode(val ru: String) {
 enum class Headline { AVG, LAST, SUM }
 
 data class BarData(val label: String, val frac: Float, val text: String, val secondary: Float = 0f)
-data class BodySeries(val id: String, val title: String, val unit: String, val values: List<Double?>) {
-    val fmt: (Double) -> String get() = { v -> formatNumber(Math.round(v * 10) / 10.0) + bodyUnit(unit).let { if (it.isEmpty()) "" else " $it" } }
+data class BodySeries(val id: String, val title: String, val unit: String, val values: List<Double?>, val dec: Int = 1, val target: Double? = null) {
+    val fmt: (Double) -> String get() = { v ->
+        val k = Math.pow(10.0, dec.toDouble())
+        formatNumber(Math.round(v * k) / k) + bodyUnit(unit).let { if (it.isEmpty()) "" else " $it" }
+    }
 }
 
 sealed class StatCard(val key: String, val groupRu: String, val title: String) {
@@ -122,7 +138,9 @@ class SeriesCard(
 }
 
 class BarsCard(key: String, group: String, title: String, val rows: List<BarData>) : StatCard(key, group, title)
-class BodyCard(key: String, title: String, val metrics: List<BodySeries>) : StatCard(key, "Весы", title)
+/** Карточка «как весы». [food] (5.19.5) — питание: среднее вместо последнего, норма линией и % от нормы в таблице. */
+class BodyCard(key: String, title: String, val metrics: List<BodySeries>, val note: String? = null, group: String = "Весы", val food: Boolean = false) :
+    StatCard(key, group, title)
 /** Шкалы самочувствия: значение — в дни прохождения. */
 data class WbSeries(val block: WBlock, val values: List<Double?>, val lastAll: Double?, val prevAll: Double?)
 class WellbeingCard(key: String, title: String, val metrics: List<WbSeries>) : StatCard(key, "Самочувствие", title)
@@ -140,17 +158,27 @@ private val groupOrder = listOf("Отметки", "Показатели", "Ча�
 /** Применить сохранённый порядок: известные — по нему, новые — на своих местах в конце. */
 fun <T : StatCard> ordered(cards: List<T>, order: List<String>): List<T> {
     val idx = order.withIndex().associate { it.value to it.index }
-    return cards.withIndex().sortedBy { (i, c) -> idx[c.key] ?: (order.size + i) }.map { it.value }
+    val res = cards.filter { it.key in idx }.sortedBy { idx[it.key] }.toMutableList()
+    // новая карточка (5.19) встаёт сразу после своего соседа по умолчанию, а не в самый конец
+    cards.forEachIndexed { i, c ->
+        if (c.key in idx) return@forEachIndexed
+        val prev = if (i > 0) cards[i - 1] else null
+        res.add(if (prev == null) 0 else res.indexOf(prev) + 1, c)
+    }
+    return res
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatsScreen(repo: Repo, prefs: Prefs, modifier: Modifier, openDay: (LocalDate) -> Unit = {}) {
+fun StatsScreen(repo: Repo, prefs: Prefs, modifier: Modifier, openDay: (LocalDate) -> Unit = {},
+                /** 5.24: графики тренировок (прогресс) — показываются в группе «Тренировки». */
+                trainCharts: (@Composable (Modifier) -> Unit)? = null) {
     val template = collect(repo.template)
     val entries = collect(repo.entries)
     val notes = collect(repo.monthNotes)
     collect(repo.balance)
     collect(repo.checkups)
+    collect(repo.profile)
     var order by remember { mutableStateOf(prefs.statOrder) }
     var mode by rememberSaveable { mutableStateOf(Mode.MONTH) }
     var monthStart by rememberSaveable { mutableStateOf(LocalDate.now().withDayOfMonth(1).key()) }
@@ -178,37 +206,59 @@ fun StatsScreen(repo: Repo, prefs: Prefs, modifier: Modifier, openDay: (LocalDat
     val prevVals = days.map { entries[it.minusDays(days.size.toLong()).key()] ?: emptyMap() }
     val raw = buildCards(repo, prefs, template, days, dayVals, prevVals, to, if (mode == Mode.MONTH) monthStart.take(7) else null)
     val cards = ordered(raw, order)
-    val visible = cards.filter { it.key !in hidden }
+    var ctxSel by remember { mutableStateOf(prefs.statCtx) }
+    val present = remember(cards, template) { cards.map { StatContext.of(it, template) }.toSet() }
+    val shownCtx = StatContext.all.filter { it.id in present || (it.id == StatContext.TRAIN && trainCharts != null) }
+    if (ctxSel != StatContext.ALL && shownCtx.none { it.id == ctxSel }) ctxSel = StatContext.ALL
+    val visible = cards.filter { it.key !in hidden && (ctxSel == StatContext.ALL || StatContext.of(it, template) == ctxSel) }
     val ctx = Ctx(repo, prefs, days, notes, { prefTick++ }, prefTick, openDay)
 
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     var view by remember { mutableIntStateOf(prefs.statView) }
     Column(modifier.fillMaxSize()) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
-        listOf(t("Динамика"), t("Итоги месяца")).forEachIndexed { i, label ->
-            SegmentedButton(
-                selected = view == i, onClick = { view = i; prefs.statView = i; Log.d("Stats", "вид: $label") },
-                shape = SegmentedButtonDefaults.itemShape(i, 2), label = { Text(label) },
-            )
+    // 5.30: один ряд вместо трёх — группа графиков; период и вид — в строке инструментов
+    // группы графиков по смыслу — фильтр сверху, всегда под рукой
+    if (view == 0) Row(Modifier.fillMaxWidth().hScroll().padding(start = 12.dp, end = 12.dp, top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FilterChip(ctxSel == StatContext.ALL, { ctxSel = StatContext.ALL; prefs.statCtx = ctxSel }, label = { Text(t("Все")) })
+        shownCtx.forEach { c ->
+            FilterChip(ctxSel == c.id, { ctxSel = c.id; prefs.statCtx = c.id; Log.d("Stats", "группа: ${c.id}") },
+                label = { Text(t(c.ru)) }, leadingIcon = { Icon(c.icon, null, Modifier.size(16.dp)) })
         }
     }
-    if (view == 1) MonthView(
-        repo, prefs, LocalDate.parse(monthStart), onMonth = { monthStart = it.withDayOfMonth(1).key() },
-        openDay = openDay, modifier = Modifier.weight(1f),
-    ) else
+    if (view == 0 && ctxSel == StatContext.TRAIN && trainCharts != null) trainCharts(Modifier.weight(1f).fillMaxSize())
+    else
     Box(Modifier.weight(1f).fillMaxSize()) {
     LazyColumn(
         Modifier.fillMaxSize(), state = listState,
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item("modes") {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Mode.entries.forEach { m ->
-                    FilterChip(selected = mode == m, onClick = {
-                        mode = m
-                        if (m == Mode.CUSTOM) pickRange = true
-                    }, label = { Text(m.title) })
+        item("tools") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // период — одной кнопкой с меню
+                var modeMenu by remember { mutableStateOf(false) }
+                Box {
+                    androidx.compose.material3.FilledTonalButton({ modeMenu = true }, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                        Text(mode.title); Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(18.dp))
+                    }
+                    androidx.compose.material3.DropdownMenu(modeMenu, { modeMenu = false }) {
+                        Mode.entries.forEach { m ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(m.title) }, {
+                                mode = m; modeMenu = false
+                                if (m == Mode.CUSTOM) pickRange = true
+                            })
+                        }
+                    }
+                }
+                TextButton(onClick = { showFilter = true }) {
+                    Icon(Icons.Filled.FilterList, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp))
+                    Text(if (hidden.isEmpty()) t("Все графики") else t("Показано %d из %d", visible.size, cards.size))
+                }
+                Spacer(Modifier.weight(1f))
+                val colIcon = when (cols) { 1 -> Icons.Filled.ViewStream; 2 -> Icons.Filled.GridView; else -> Icons.Filled.ViewModule }
+                IconButton({ cols = cols % 3 + 1; prefs.statCols = cols; Log.d("Stats", "в ряд: $cols") }) {
+                    Icon(colIcon, t("%d в ряд", cols), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -230,21 +280,16 @@ fun StatsScreen(repo: Repo, prefs: Prefs, modifier: Modifier, openDay: (LocalDat
                 }
             }
         }
-        item("tools") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { showFilter = true }) {
-                    Icon(Icons.Filled.FilterList, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
-                    Text(if (hidden.isEmpty()) t("Все графики") else t("Показано %d из %d", visible.size, cards.size))
-                }
-                Spacer(Modifier.weight(1f))
-                listOf(1 to Icons.Filled.ViewStream, 2 to Icons.Filled.GridView, 3 to Icons.Filled.ViewModule).forEach { (n, ic) ->
-                    IconToggleButton(checked = cols == n, onCheckedChange = { cols = n; prefs.statCols = n; Log.d("Stats", "в ряд: $n") }) {
-                        Icon(ic, t("%d в ряд", n), tint = if (cols == n) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
-                    }
-                }
-            }
-        }
 
+        // 5.63: наложение двух показателей и прошлого периода
+        item("compare") {
+            val prevDays = days.map { it.minusDays(days.size.toLong()) }
+            val prevCards = remember(entries, template, from, to) {
+                buildCards(repo, prefs, template, prevDays, prevDays.map { entries[it.key()] ?: emptyMap() },
+                    prevDays.map { entries[it.minusDays(days.size.toLong()).key()] ?: emptyMap() }, prevDays.last(), null)
+            }
+            CompareCard(prefs, Compare.series(cards), Compare.series(prevCards), "${prevDays.first().ruShort()} – ${prevDays.last().ruShort()}")
+        }
         if (visible.isEmpty()) item("empty") {
             Text(t("Нет данных за период или все графики скрыты фильтром."), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -335,6 +380,7 @@ private fun buildCards(
 ): List<StatCard> {
     val out = mutableListOf<StatCard>()
     val n = days.size
+    val prof = repo.profile.value
 
     // Индекс дня (как в «Итогах месяца»): только полные дни
     run {
@@ -378,9 +424,17 @@ private fun buildCards(
             dayVals.flatMap { Workouts.sessions(it, item.id) }.groupBy { it.kind }
                 .map { (k, l) -> Workouts.kind(k).title to t("%d раз · %s", l.size, formatMinutes(l.sumOf { it.min }.toDouble())) }
                 .sortedByDescending { it.second.substringBefore(" ").toIntOrNull() ?: 0 }.take(4)
+        // шаги → километры по длине шага из профиля
+        val kmStats = if (item.source != Source.HC_STEPS || prof.h == null) emptyList() else {
+            val km = values.mapNotNull { v -> v?.let { Anthro.stepsKm(prof, it) } }
+            if (km.isEmpty()) emptyList() else listOf(
+                t("км в день") to formatNumber(Math.round(km.average() * 10) / 10.0),
+                t("всего км") to formatNumber(Math.round(km.sum()).toDouble()),
+            )
+        }
         out += SeriesCard(
             "num_" + item.id, group, item.displayName, values, fmt,
-            extraStats = kindStats,
+            extraStats = kindStats + kmStats,
             note = if (kindStats.isNotEmpty() && !prefs.countWalking) t("Ходьба в минуты тренировок не засчитывается.") else null,
             headline = if (isWeight) Headline.LAST else Headline.AVG,
             good = when (item.source) { Source.HC_SLEEP, Source.HC_STEPS, Source.HC_EXERCISE -> 1; Source.HC_RESTING_HR -> -1; else -> if (item.type == ItemType.SCALE) 1 else 0 },
@@ -398,7 +452,40 @@ private fun buildCards(
         val series = ids.values.sortedBy { BodyCatalog.order(it.id) }.map { m ->
             BodySeries(m.id, BodyCatalog.title(m), m.unit, parsed.map { d -> d?.metrics?.firstOrNull { it.id == m.id }?.value })
         }
-        out += BodyCard("body_" + item.id, item.displayName, series)
+        // 5.25: точность — сколько взвешиваний не утром и самый неправдоподобный скачок за период
+        val notAm = parsed.count { it != null && !it.morning() }
+        val jump = days.mapNotNull { d -> BodyCheck.jump(repo.entries.value, item.id, d) }
+            .maxByOrNull { kotlin.math.abs(it.muscleKg ?: 0.0) + kotlin.math.abs(it.fatPct ?: 0.0) }
+        val bodyNote = listOfNotNull(
+            jump?.let { BodyCheck.text(it) },
+            if (notAm > 0) t("Взвешиваний не утром: %d — жир и мышцы в эти дни менее точны.", notAm) else null,
+            t("Состав тела весы оценивают по сопротивлению току — он зависит от воды. Смотрите тренд за 2–4 недели, а не отдельные дни."),
+        ).joinToString("\n")
+        out += BodyCard("body_" + item.id, item.displayName, series, note = bodyNote)
+    }
+
+    // Тело и рост (5.19): ИМТ на каждый день взвешивания, FFMI, FMI, талия/рост
+    prof.h?.let { h ->
+        val lean = dayVals.map { Anthro.leanOf(template, it) }
+        val weight = dayVals.map { Anthro.weightOf(template, it) }
+        val waist = dayVals.map { Anthro.bodyMetric(template, it, "waist") }
+        val series = listOf(
+            // ИМТ — по росту из профиля (у openScale может быть свой рост), его ИМТ — только если веса нет
+            BodySeries("calc.bmi", t("ИМТ"), "", dayVals.zip(weight).map { (d, w) -> w?.let { Anthro.bmi(it, h) } ?: Anthro.bodyMetric(template, d, "bmi") }),
+            BodySeries("calc.ffmi", "FFMI", "", lean.map { it?.let { Anthro.ffmi(it, h) } }),
+            BodySeries("calc.ffmi_norm", t("FFMI норм."), "", lean.map { it?.let { Anthro.ffmiNorm(it, h) } }),
+            BodySeries("calc.fmi", "FMI", "", weight.zip(lean).map { (w, l) -> if (w != null && l != null) Anthro.fmi(w - l, h) else null }),
+            BodySeries("calc.whtr", t("Талия/рост"), "", dayVals.zip(waist).map { (d, wst) -> Anthro.bodyMetric(template, d, "whtr") ?: wst?.let { it / (h * 100) } }, dec = 2),
+        ).filter { s -> s.values.any { it != null } }
+        if (series.isNotEmpty()) {
+            val (lo, hi) = Anthro.normalWeight(h)
+            out += BodyCard("anthro", t("Тело и рост"), series, note = listOf(
+                t("ИМТ: норма 18,5–25 — при росте %s см это %s–%s кг.", formatNumber(prof.heightCm!!), formatNumber(Math.round(lo).toDouble()), formatNumber(Math.round(hi).toDouble())),
+                t("FFMI — безжировая масса на рост²: около 18 — средне, 20–22 — хорошо тренирован, 22–25 — очень много мышц. «Норм.» — с поправкой на рост."),
+                if (prof.female) t("FMI — жир на рост²: для женщин 5–9 — норма.") else t("FMI — жир на рост²: для мужчин 3–6 — норма."),
+                t("Талия/рост: меньше 0,5 — хорошо."),
+            ).joinToString("\n"))
+        }
     }
 
     // Самочувствие: все шкалы чекапа в одной карточке, как весы
@@ -423,14 +510,16 @@ private fun buildCards(
     template.filter { it.type == ItemType.WATER }.forEach { item ->
         val values = dayVals.map { parseNumber(it[item.id]) }
         if (values.all { it == null }) return@forEach
-        val norm = item.max.takeIf { it > 0 } ?: 2.0
+        // 5.42: норма своя на каждый день; линия — средняя норма периода
+        val norms = dayVals.map { Hydration.normOf(item, it) }
+        val norm = Math.round(norms.average() * 10) / 10.0
         val p = values.filterNotNull()
         out += SeriesCard(
             "water_" + item.id, "Показатели", item.displayName, values, ::formatLiters,
             good = 1, defType = ChartType.BARS, target = norm,
             extraStats = listOf(
                 t("выпито всего") to formatLiters(p.sum()),
-                t("норма выполнена") to t("%d из %d дн.", p.count { it >= norm }, p.size),
+                t("норма выполнена") to t("%d из %d дн.", values.indices.count { values[it] != null && values[it]!! >= norms[it] }, p.size),
             ),
         )
     }
@@ -447,6 +536,56 @@ private fun buildCards(
             { formatNumber(Math.round(it).toDouble()) + " " + t("ккал") }, defType = ChartType.BARS,
             note = t("В среднем за день: Б %s г · Ж %s г · У %s г", avg { it.protein }, avg { it.fat }, avg { it.carbs }),
         )
+        // БЖУ «как весы» (5.19.5): калории, белки, жиры, углеводы, белок на кг и доли — среднее, норма, % от нормы
+        val macros = meals.map { mealMacros(it) }
+        if (macros.any { it != null }) {
+            val ents = repo.entries.value
+            val ok = macros.indices.filter { macros[it] != null }
+            val wts = days.map { Anthro.weightOn(template, ents, it) }
+            val burn = if (prof.h != null && prof.age() != null) days.map { Anthro.energyOn(prof, template, ents, it)?.total } else days.map { null }
+            fun avgOn(l: List<Double?>) = ok.mapNotNull { l[it] }.takeIf { it.isNotEmpty() }?.average()
+            val avgBurn = avgOn(burn); val avgW = avgOn(wts)
+            fun share(f: (Macros) -> Double, k: Double) = macros.map { m ->
+                m?.let { val tot = 4 * it.protein + 9 * it.fat + 4 * it.carbs; if (tot > 0) f(it) * k / tot * 100 else null }
+            }
+            val g = t("г")
+            val series = listOf(
+                BodySeries("calc.kcal_in", t("Калории"), "kcal", kcal.mapIndexed { i, v -> if (macros[i] != null || v != null) v else null }, dec = 0, target = avgBurn),
+                BodySeries("calc.protein_g", t("Белки"), g, macros.map { it?.protein }, dec = 0, target = avgW?.let { it * DayNorms.P_LO }),
+                BodySeries("calc.fat_g", t("Жиры"), g, macros.map { it?.fat }, dec = 0, target = avgBurn?.let { it * 0.275 / 9 }),
+                BodySeries("calc.carbs_g", t("Углеводы"), g, macros.map { it?.carbs }, dec = 0, target = avgBurn?.let { it * 0.55 / 4 }),
+                BodySeries("calc.protein_kg", t("Белок на кг"), g, macros.zip(wts).map { (m, w) -> if (m != null && w != null && w > 0) m.protein / w else null }, dec = 1, target = DayNorms.P_LO),
+                BodySeries("calc.pct_p", t("Доля белков"), "%", share({ it.protein }, 4.0), dec = 0),
+                BodySeries("calc.pct_f", t("Доля жиров"), "%", share({ it.fat }, 9.0), dec = 0, target = 27.5),
+                BodySeries("calc.pct_c", t("Доля углеводов"), "%", share({ it.carbs }, 4.0), dec = 0, target = 55.0),
+            ).filter { s -> s.values.any { it != null } }
+            out += BodyCard("food_" + item.id, t("%s: БЖУ", item.displayName), series, group = "Питание", food = true, note = listOf(
+                t("Среднее — по дням, когда записана еда. В таблице справа — сколько это от нормы."),
+                if (avgBurn != null) t("Норма: калории — расход по профилю, белок — от 1,6 г на кг веса, жиры ≈ 27 % и углеводы ≈ 55 % калорий.")
+                else t("Заполните «Профиль» (рост и год рождения) — появятся нормы калорий, жиров и углеводов."),
+            ).joinToString("\n"))
+        }
+        // энергобаланс (5.19): съедено − расход по профилю
+        if (prof.h != null && prof.age() != null) {
+            val en = days.map { Anthro.energyOn(prof, template, repo.entries.value, it) }
+            val bal = kcal.zip(en).map { (e, x) -> if (e != null && x != null) e - x.total else null }
+            val ok = bal.indices.filter { bal[it] != null }
+            if (ok.isNotEmpty()) {
+                val sum = ok.sumOf { bal[it]!! }
+                out += SeriesCard(
+                    "energy_" + item.id, "Питание", t("Энергобаланс: съедено − расход"), bal, Anthro::balKcal,
+                    defType = ChartType.BARS,
+                    extraStats = listOf(
+                        t("съедено в день") to Anthro.kcal(ok.map { kcal[it]!! }.average()),
+                        t("расход в день") to Anthro.kcal(ok.map { en[it]!!.total }.average()),
+                        t("из него тренировки") to Anthro.kcal(ok.map { en[it]!!.workouts }.average()),
+                        t("за период") to Anthro.signedKcal(sum),
+                        t("≈ в весе") to (if (sum < 0) "−" else "+") + formatNumber(Math.round(Math.abs(sum) / 770.0) / 10.0) + " " + t("кг"),
+                    ),
+                    note = t("Плюс — профицит (для набора массы нужен небольшой, 200–400 ккал), минус — дефицит. Расход — оценка: базовый обмен по Миффлину – Сан Жеору × 1,2 + шаги сверх 3000 + тренировки. Дни без записей о еде не считаются; если что-то не записано, будет ложный дефицит."),
+                )
+            }
+        }
         val gly = meals.map { Glycemic.day(it) }
         if (gly.any { it != null }) {
             val g = gly.filterNotNull()
@@ -557,7 +696,7 @@ internal fun ChartTypeMenu(key: String, def: ChartType, ctx: Ctx) {
 fun FullCard(c: StatCard, ctx: Ctx) {
     when (c) {
         is SeriesCard -> SectionCard(c.title, watch = c.watch, action = { ChartTypeMenu(c.key, c.defType, ctx) }) {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 c.headValue?.let { Stat(c.headLabel, c.fmt(it)) }
                 if (c.headline != Headline.SUM && c.present.isNotEmpty()) {
                     Stat(t("мин."), c.fmt(c.present.min())); Stat(t("макс."), c.fmt(c.present.max()))
@@ -658,25 +797,32 @@ private fun DiaryFull(c: DiaryCard, ctx: Ctx) {
 /** Группа «Весы»: выбор показателя, один график, таблица всех показателей с динамикой. */
 @Composable
 private fun BodyFull(c: BodyCard, ctx: Ctx) {
-    var sel by remember { mutableStateOf(ctx.prefs.bodySelected) }
+    var sel by remember { mutableStateOf(if (c.food) ctx.prefs.foodSelected else ctx.prefs.bodySelected) }
+    fun select(id: String) { sel = id; if (c.food) ctx.prefs.foodSelected = id else ctx.prefs.bodySelected = id }
     val cur = c.metrics.firstOrNull { it.id == sel } ?: c.metrics.first()
     val key = c.key + "_" + BodyCatalog.key(cur.id)
-    SectionCard(c.title, action = { ChartTypeMenu(key, ChartType.SMOOTH, ctx) }) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    SectionCard(c.title, action = { ChartTypeMenu(key, if (c.food) ChartType.BARS else ChartType.SMOOTH, ctx) }) {
+        Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             c.metrics.forEach { m ->
-                FilterChip(selected = m.id == cur.id, onClick = { sel = m.id; ctx.prefs.bodySelected = m.id },
+                FilterChip(selected = m.id == cur.id, onClick = { select(m.id) },
                     leadingIcon = { Icon(BodyCatalog.icon(m.id), null, Modifier.size(18.dp)) }, label = { Text(m.title) })
             }
         }
         val p = cur.values.filterNotNull()
         val ch = change(cur.values)
-        Row(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            p.lastOrNull()?.let { Stat(t("последнее"), cur.fmt(it)) }
-            ch?.let { Stat(t("за период"), deltaText(it, cur.fmt), deltaColor(it, BodyCatalog.good(cur.id))) }
+        Row(Modifier.padding(top = 6.dp).hScroll(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (c.food) {
+                if (p.isNotEmpty()) Stat(t("в среднем"), cur.fmt(p.average()))
+                cur.target?.let { tg -> Stat(t("норма"), "≈ " + cur.fmt(tg)) }
+                cur.target?.let { tg -> if (p.isNotEmpty()) Stat(t("дней в норме"), t("%d из %d", p.count { it in tg * 0.9..tg * 1.15 }, p.size)) }
+            } else {
+                p.lastOrNull()?.let { Stat(t("последнее"), cur.fmt(it)) }
+                ch?.let { Stat(t("за период"), deltaText(it, cur.fmt), deltaColor(it, BodyCatalog.good(cur.id))) }
+            }
             if (p.isNotEmpty()) { Stat(t("мин."), cur.fmt(p.min())); Stat(t("макс."), cur.fmt(p.max())) }
         }
         Spacer(Modifier.size(8.dp))
-        Chart(cur.values, ctx.days, ctx.prefs.chartType(key, ChartType.SMOOTH), cur.fmt)
+        Chart(cur.values, ctx.days, ctx.prefs.chartType(key, if (c.food) ChartType.BARS else ChartType.SMOOTH), cur.fmt, target = cur.target)
         Spacer(Modifier.size(8.dp))
         HorizontalDivider()
         // таблица: все показатели, изменение за период и мини-график
@@ -686,18 +832,31 @@ private fun BodyFull(c: BodyCard, ctx: Ctx) {
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                     .background(if (m.id == cur.id) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) else androidx.compose.ui.graphics.Color.Transparent)
-                    .clickable { sel = m.id; ctx.prefs.bodySelected = m.id }
+                    .clickable { select(m.id) }
                     .padding(horizontal = 4.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(BodyCatalog.icon(m.id), null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(8.dp))
                 Text(m.title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (c.food) {
+                    // питание: среднее за период и сколько это от нормы
+                    val a = m.values.filterNotNull().takeIf { it.isNotEmpty() }?.average()
+                    Text(a?.let(m.fmt) ?: "—", Modifier.width(88.dp).padding(start = 4.dp), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    val pc = if (a != null && m.target != null && m.target > 0) Math.round(a / m.target * 100).toInt() else null
+                    Text(pc?.let { "$it%" } ?: "", Modifier.width(72.dp), style = MaterialTheme.typography.labelMedium, maxLines = 1,
+                        color = when { pc == null -> MaterialTheme.colorScheme.onSurfaceVariant; pc in 90..115 -> Color(0xFF3FA66B); else -> MaterialTheme.colorScheme.onSurfaceVariant })
+                } else {
                 Text(last?.let(m.fmt) ?: "—", Modifier.width(88.dp).padding(start = 4.dp), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 Text(deltaText(d, m.fmt).replace("▲ ", "▲").replace("▼ ", "▼"), Modifier.width(72.dp),
                     style = MaterialTheme.typography.labelMedium, color = deltaColor(d, BodyCatalog.good(m.id)), maxLines = 1)
+                }
                 Sparkline(m.values, Modifier.width(48.dp).height(22.dp))
             }
+        }
+        c.note?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -711,7 +870,7 @@ private fun WbFull(c: WellbeingCard, ctx: Ctx) {
     val fmt: (Double) -> String = { b.format(it) }
     val good = if (b.higherIsWorse) -1 else 1
     SectionCard(c.title, action = { ChartTypeMenu("wb_" + b.id, ChartType.LINE, ctx) }) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             c.metrics.forEach { m ->
                 FilterChip(selected = m.block.id == b.id, onClick = { sel = m.block.id; ctx.prefs.wbSelected = m.block.id },
                     label = { Text(m.block.title.s) })
@@ -719,7 +878,7 @@ private fun WbFull(c: WellbeingCard, ctx: Ctx) {
         }
         val p = cur.values.filterNotNull()
         val ch = change(cur.values)
-        Row(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(16.dp),
+        Row(Modifier.padding(top = 6.dp).hScroll(), horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically) {
             cur.lastAll?.let { Stat(t("последнее"), fmt(it) + " / " + fmt(b.max)) }
             ch?.let { Stat(t("за период"), deltaText(it, fmt), deltaColor(it, good)) }
@@ -792,7 +951,7 @@ private fun CompactCard(c: StatCard, ctx: Ctx, cols: Int, modifier: Modifier, on
                 }
                 is SleepCard -> SleepCompact(c, big)
                 is BodyCard -> {
-                    val m = c.metrics.firstOrNull { it.id == ctx.prefs.bodySelected } ?: c.metrics.first()
+                    val m = c.metrics.firstOrNull { it.id == (if (c.food) ctx.prefs.foodSelected else ctx.prefs.bodySelected) } ?: c.metrics.first()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(BodyCatalog.icon(m.id), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(4.dp))
@@ -872,4 +1031,57 @@ private fun FilterDialog(cards: List<StatCard>, hidden: Set<String>, onChange: (
             }
         },
     )
+}
+
+
+/**
+ * 5.24: группы графиков по смыслу — для фильтра на экране «Графики».
+ * Группа карточки определяется по ключу и источнику её пункта.
+ */
+data class StatContext(val id: String, val ru: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    companion object {
+        const val ALL = "all"
+        const val TRAIN = "train"
+        val all = listOf(
+            StatContext("body", "Тело", Icons.Filled.MonitorWeight),
+            StatContext("sleep", "Сон и пульс", Icons.Filled.Bedtime),
+            StatContext("activity", "Активность", Icons.AutoMirrored.Filled.DirectionsWalk),
+            StatContext(TRAIN, "Тренировки", Icons.Filled.FitnessCenter),
+            StatContext("food", "Питание", Icons.Filled.Restaurant),
+            StatContext("mood", "Самочувствие", Icons.Filled.Psychology),
+            StatContext("habits", "Привычки", Icons.Filled.CheckCircle),
+            StatContext("money", "Финансы", Icons.Filled.AccountBalanceWallet),
+            StatContext("notes", "Заметки", Icons.AutoMirrored.Filled.Notes),
+            StatContext("other", "Другое", Icons.Filled.Tag),
+        )
+
+        fun of(c: StatCard, template: List<TemplateItem>): String {
+            val k = c.key
+            fun item(prefix: String) = template.firstOrNull { it.id == k.removePrefix(prefix) }
+            return when {
+                k == "anthro" || k.startsWith("body_") -> "body"
+                k == "index" || k == "wellbeing" -> "mood"
+                k == "checks" || k.startsWith("multi_") -> "habits"
+                k == "note" || k == "diary" -> "notes"
+                k.startsWith("water_") || k.startsWith("kcal_") || k.startsWith("food_") || k.startsWith("energy_") || k.startsWith("gly_") -> "food"
+                k.startsWith("money_") || k.startsWith("cat_") || k.startsWith("flow_") || k.startsWith("top_") -> "money"
+                k.startsWith("num_") -> {
+                    val it = item("num_")
+                    when {
+                        it == null -> "other"
+                        c.groupRu == "Весы" -> "body"
+                        it.source == Source.HC_SLEEP || it.source == Source.HC_RESTING_HR -> "sleep"
+                        it.source == Source.HC_STEPS || it.source == Source.HC_EXERCISE -> "activity"
+                        it.source == Source.HC_WEIGHT -> "body"
+                        it.type == ItemType.SCALE -> "mood"
+                        else -> "other"
+                    }
+                }
+                c.groupRu == "Самочувствие" -> "mood"
+                c.groupRu == "Питание" -> "food"
+                c.groupRu == "Финансы" -> "money"
+                else -> "other"
+            }
+        }
+    }
 }

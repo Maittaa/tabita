@@ -118,8 +118,12 @@ fun Chart(values: List<Double?>, days: List<LocalDate>, type: ChartType, fmt: (D
     val avg = values.filterNotNull().average()
     val labels: List<String> = if (type == ChartType.WEEKLY) weeks.map { it.first.ruShort() } else days.map { it.ruShort() }
     val axisFmt: (Double) -> String = { v -> if (type == ChartType.DELTA && v > 0) "+" + fmt(v) else if (v < 0) "−" + fmt(-v) else fmt(v) }
+    val touch = androidx.compose.runtime.remember(values, type) { androidx.compose.runtime.mutableStateOf<Float?>(null) }
+    val tipStyle = TextStyle(fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+    val tipBg = MaterialTheme.colorScheme.surfaceContainerHighest
+    val scrubLine = MaterialTheme.colorScheme.onSurfaceVariant
 
-    Canvas(Modifier.fillMaxWidth().height(height.dp)) {
+    Canvas(Modifier.fillMaxWidth().height(height.dp).chartScrub(touch)) {
         val left = 46.dp.toPx(); val bottom = 18.dp.toPx(); val top = 6.dp.toPx()
         val w = size.width - left; val h = size.height - bottom - top
         val n = series.size
@@ -180,6 +184,16 @@ fun Chart(values: List<Double?>, days: List<LocalDate>, type: ChartType, fmt: (D
             val tl = measurer.measure(labels[i], style)
             val px = (x(i) - tl.size.width / 2).coerceIn(left, size.width - tl.size.width)
             drawText(tl, topLeft = Offset(px, size.height - tl.size.height))
+        }        // касание: линия, точка и подпись «дата — значение»
+        touch.value?.let { tx ->
+            val i = nearestIndex(tx, series.indices.map { if (series[it] != null || (type == ChartType.SMOOTH && smooth.getOrNull(it) != null)) x(it) else null })
+                ?: return@let
+            val v = series[i] ?: return@let
+            val date = if (type == ChartType.WEEKLY) t("неделя с %s", weeks[i].first.ruShort()) else days[i].ruShort()
+            val txt = mutableListOf(date, axisFmt(v))
+            val pts = mutableListOf(y(v) to (if (v < 0 && (bars || type == ChartType.DELTA)) neg else line))
+            if (type == ChartType.SMOOTH) smooth.getOrNull(i)?.let { s -> txt += t("за 7 дн.: %s", fmt(s)); pts[0] = y(v) to faint.copy(alpha = 1f); pts += y(s) to line }
+            drawScrub(x(i), top, top + h, pts, txt, measurer, tipStyle, scrubLine, tipBg, grid, left)
         }
     }
     if (target != null) Row(verticalAlignment = Alignment.CenterVertically) {

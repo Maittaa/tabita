@@ -2,6 +2,8 @@ package org.maittaa.tabita
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.BookmarkAdded
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.DeleteForever
 import android.Manifest
 import android.content.Intent
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -33,7 +36,19 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Backpack
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.width
@@ -134,6 +149,93 @@ private fun aiTitle(p: Prefs) = when {
     else -> p.aiModel.ifBlank { t("свой сервис") }
 }
 
+private fun profileSummary(p: Profile): String =
+    listOfNotNull(
+        p.heightCm?.let { formatNumber(it) + " " + t("см") },
+        p.age()?.let { t("%d лет", it) },
+        when { p.male -> t("мужской"); p.female -> t("женский"); else -> null },
+    ).joinToString(" · ").ifEmpty { t("не заполнен — нужен для ИМТ, FFMI и расхода энергии") }
+
+/** Раздел «Профиль»: рост, год рождения, пол и что из них считается. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ProfileBody(repo: Repo) {
+    val p = collect(repo.profile)
+    var hText by remember { mutableStateOf(p.heightCm?.let { formatNumber(it) } ?: "") }
+    var yText by remember { mutableStateOf(p.birthYear?.toString() ?: "") }
+    val year = LocalDate.now().year
+    val hVal = parseNumber(hText)
+    val hErr = hText.isNotBlank() && (hVal == null || hVal !in 100.0..250.0)
+    val yVal = yText.trim().toIntOrNull()
+    val yErr = yText.isNotBlank() && (yVal == null || yVal !in (year - 110)..(year - 10))
+
+    Hint(t("Данные постоянные, поэтому они здесь, а не в чек-листе. Нужны только для расчётов в графиках."))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            hText, { v ->
+                hText = v.filter { it.isDigit() || it == ',' || it == '.' }.take(5)
+                val n = parseNumber(hText)
+                if (hText.isBlank()) repo.setProfile(repo.profile.value.copy(heightCm = null))
+                else if (n != null && n in 100.0..250.0) repo.setProfile(repo.profile.value.copy(heightCm = n))
+            },
+            Modifier.weight(1f), label = { Text(t("Рост, см")) }, singleLine = true, isError = hErr,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+        )
+        OutlinedTextField(
+            yText, { v ->
+                yText = v.filter { it.isDigit() }.take(4)
+                val n = yText.toIntOrNull()
+                if (yText.isBlank()) repo.setProfile(repo.profile.value.copy(birthYear = null))
+                else if (n != null && n in (year - 110)..(year - 10)) repo.setProfile(repo.profile.value.copy(birthYear = n))
+            },
+            Modifier.weight(1f), label = { Text(t("Год рождения")) }, singleLine = true, isError = yErr,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(t("Пол — для формулы базового обмена"), style = MaterialTheme.typography.labelLarge)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("m" to t("Мужской"), "f" to t("Женский")).forEach { (k, title) ->
+            FilterChip(selected = p.sex == k, onClick = {
+                repo.setProfile(p.copy(sex = if (p.sex == k) null else k))
+            }, label = { Text(title) })
+        }
+    }
+
+    // что получается из профиля прямо сейчас
+    val entries = collect(repo.entries)
+    val tmpl = collect(repo.template)
+    val today = LocalDate.now()
+    val w = remember(entries, tmpl) { Anthro.weightOn(tmpl, entries, today) }
+    val lean = remember(entries, tmpl) {
+        (0..60).firstNotNullOfOrNull { i -> entries[today.minusDays(i.toLong()).toString()]?.let { Anthro.leanOf(tmpl, it) } }
+    }
+    val h = p.h
+    if (h != null) {
+        Spacer(Modifier.height(10.dp))
+        SubTitle(t("Что считается"))
+        val (lo, hi) = Anthro.normalWeight(h)
+        val rows = listOfNotNull(
+            w?.let { t("ИМТ") to formatNumber(Math.round(Anthro.bmi(it, h) * 10) / 10.0) + t(" (вес %s кг)", formatNumber(it)) },
+            t("Нормальный вес по ИМТ") to t("%s–%s кг", formatNumber(Math.round(lo).toDouble()), formatNumber(Math.round(hi).toDouble())),
+            lean?.let { t("FFMI") to formatNumber(Math.round(Anthro.ffmi(it, h) * 10) / 10.0) + " · " + t("норм. %s", formatNumber(Math.round(Anthro.ffmiNorm(it, h) * 10) / 10.0)) },
+            w?.let { Anthro.bmr(p, it) }?.let { t("Базовый обмен") to Anthro.kcal(it) },
+            w?.let { Anthro.bmr(p, it) }?.let { t("Расход в спокойный день") to Anthro.kcal(it * 1.2) },
+            Anthro.strideM(p)?.let { t("Длина шага") to t("%d см · 10 000 шагов ≈ %s км", Math.round(it * 100).toInt(), formatNumber(Math.round(it * 100) / 10.0)) },
+        )
+        rows.forEach { (k, v) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                Text(k, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(v, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        if (w == null) Hint(t("Вес ещё не записан — ИМТ и базовый обмен появятся после первого взвешивания."))
+        else if (p.age() == null) Hint(t("Укажите год рождения — без него базовый обмен не считается."))
+        if (lean == null) Hint(t("FFMI нужен процент жира — его дают весы openScale."))
+        Hint(t("В графиках: карточка «Тело и рост» (ИМТ, FFMI, FMI) в группе «Весы», «Энергобаланс» в «Питании», километры в карточке шагов."))
+    }
+}
+
 @Composable
 private fun AboutBody() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -153,30 +255,30 @@ private fun AboutBody() {
     Text(t("Личный дневник: ежедневный чек-лист, плитки дня, сон, питание, финансы, самочувствие и графики за любой период."),
         style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.height(10.dp))
-    SubTitle(t("Что нового в 5.17"))
-    listOf(
-        t("Сцепка приёмов пищи: одна общая карточка, позиции открываются отдельно"),
-        t("Плитки — четыре размера: полная, широкая, половина, мини"),
-        t("Плитки — четыре размера: полная, широкая, половина, мини"),
-        t("Тренировки по видам: с часов и вручную"),
-        t("Тренировки по видам: с часов и вручную"),
-        t("Ходьба по умолчанию не идёт в минуты тренировок"),
-        t("Как замерить пульс покоя без часов"),
-        t("«Ещё не записано» — одной строкой с прокруткой"),
-        t("Кнопка «Удалить все данные» в разделе «Данные»"),
-        t("Удалённые пункты можно вернуть вместе с историей"),
-        t("Удалённые пункты можно вернуть вместе с историей"),
-        t("Сводку заметок можно скрыть глазом"),
-        t("Убрана пустая полоса над клавиатурой"),
-        t("Сводка всех заметок за период в конце графиков"),
-        t("Компактное окно пункта: тип — списком, группы — в одну строку"),
-        t("Двойные стрелки двигают группу пунктов целиком"),
-        t("Траты: нажмите на категорию — покупки и на что больше всего"),
-        t("Удалённый чекап самочувствия можно вернуть"),
-        t("Знак влияния на индекс: полезное — плюс, вредное — минус"),
-    ).forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
+    SubTitle(t("Что нового в %s", Changelog.current.version))
+    Changelog.current.items.forEach { Text("• " + t(it), style = MaterialTheme.typography.bodyMedium) }
+    // прошлые версии — выпадающим списком
+    var pick by remember { mutableStateOf<String?>(null) }
+    var menu by remember { mutableStateOf(false) }
+    Spacer(Modifier.height(8.dp))
+    Box {
+        OutlinedButton(onClick = { menu = true }, Modifier.fillMaxWidth()) {
+            Text(pick?.let { t("Версия %s", it) } ?: t("Предыдущие версии"), Modifier.weight(1f))
+            Icon(if (menu) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null)
+        }
+        DropdownMenu(menu, { menu = false }, Modifier.heightIn(max = 320.dp)) {
+            Changelog.all.drop(1).forEach { r ->
+                DropdownMenuItem(text = { Text(r.version) }, onClick = { pick = r.version; menu = false })
+            }
+        }
+    }
+    Changelog.all.firstOrNull { it.version == pick }?.let { r ->
+        Column(Modifier.padding(top = 6.dp)) {
+            r.items.forEach { Text("• " + t(it), style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
     Spacer(Modifier.height(10.dp))
-    Hint(t("Данные хранятся только на этом телефоне. Health Connect и openScale только читаются; в сеть уходят лишь фото и описание блюда — в выбранный вами ИИ-сервис."))
+    Hint(t("Данные хранятся только на этом телефоне. Из Health Connect и openScale данные читаются, в Health Connect записываются только завершённые тренировки; в сеть уходят лишь фото и описание блюда — в выбранный вами ИИ-сервис."))
     Hint(ctx.packageName)
 }
 
@@ -281,6 +383,8 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
     @Suppress("UNUSED_EXPRESSION") tick
 
     var open by remember { mutableStateOf<String?>(null) }
+    val openReq = collect(act.openSettings)
+    androidx.compose.runtime.LaunchedEffect(openReq) { openReq?.let { open = it; act.openSettings.value = null } }
     var wipeAsk by remember { mutableStateOf(false) }
 
     /** Содержимое раздела во всплывающем окне. */
@@ -289,10 +393,18 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
         when (id) {
             "appearance" -> {
             Text(t("Значок приложения"), style = MaterialTheme.typography.labelLarge)
-            var icon by remember { mutableStateOf(runCatching { AppIcons.current(act) }.getOrDefault("diary")) }
-            AppIcons.all.chunked(3).forEach { rowIcons ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                rowIcons.forEach { (k, v) ->
+            var icon by remember { mutableStateOf(runCatching { AppIcons.current(act) }.getOrDefault("brain")) }
+            // 5.34: значки — одним рядом с прокруткой вбок; выбранный — в видимой части
+            val iconState = androidx.compose.foundation.lazy.rememberLazyListState(
+                initialFirstVisibleItemIndex = (AppIcons.all.indexOfFirst { it.first == icon } - 1).coerceAtLeast(0))
+            androidx.compose.foundation.lazy.LazyRow(
+                Modifier.fillMaxWidth().padding(vertical = 6.dp)
+                    .scrollHint({ iconState.canScrollBackward }, { iconState.canScrollForward }, MaterialTheme.colorScheme.onSurfaceVariant),
+                state = iconState, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+            ) {
+                items(AppIcons.all.size) { i ->
+                    val (k, v) = AppIcons.all[i]
                     val (name, res) = v
                     val bmp = remember(res) {
                         androidx.core.content.ContextCompat.getDrawable(act, res)?.let {
@@ -300,7 +412,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                             it.toBitmap(144, 144).asImageBitmap()
                         }
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(76.dp).clickable {
                         if (k != icon) { AppIcons.set(act, k); icon = k; notify(t("Значок изменится на рабочем столе через несколько секунд")) }
                     }) {
                         bmp?.let {
@@ -308,13 +420,13 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                                 Modifier.size(64.dp).clip(androidx.compose.foundation.shape.CircleShape)
                                     .border(if (icon == k) 3.dp else 0.dp, MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
                         }
-                        Text(t(name), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp),
+                        Text(t(name), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 4.dp), maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             color = if (icon == k) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
-            }
-            Hint(t("С включёнными «тематическими значками» Android перекрасит значок под цвета обоев."))
+            Hint(if (Compat.themedIcons) t("С включёнными «тематическими значками» Android перекрасит значок под цвета обоев.") else Compat.themedIconHelp())
             Spacer(Modifier.height(10.dp))
             Text(t("Тема"), style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -324,6 +436,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             }
             Spacer(Modifier.height(8.dp))
             Text(t("Акцентный цвет"), style = MaterialTheme.typography.labelLarge)
+            if (!Compat.dynamicColors) Hint(Compat.dynamicHelp())
             if (Look.dynamicAvailable) FilterChip(
                 selected = Look.accent == "dynamic", onClick = { Look.accent = "dynamic"; prefs.accent = "dynamic" },
                 label = { Text(t("Как в системе (Material You)")) },
@@ -341,7 +454,20 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     ) { if (on) Icon(Icons.Filled.Check, t(name), tint = androidx.compose.ui.graphics.Color.White) }
                 }
             }
+            // 5.43: колонок в сетке плиток
+            Spacer(Modifier.height(14.dp))
+            Text(t("Сетка плиток на «Сегодня»"), style = MaterialTheme.typography.labelLarge)
+            var cols by remember { mutableIntStateOf(prefs.gridCols) }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                GRID_COLS_RANGE.forEach { n ->
+                    FilterChip(cols == n, { cols = n; prefs.gridCols = n; Log.i("Settings", "колонок: $n") },
+                        label = { Text(if (n == 4) t("%d колонки", n) else t("%d колонок", n), maxLines = 1, softWrap = false) })
+                }
+            }
+            Hint(t("Больше колонок — мельче клетка: плитки уменьшаются и по ширине, и по высоте, на экран помещается больше. Развёрнутые плитки остаются во всю ширину."))
         }
+            "rhythm" -> RhythmSettings(repo, prefs)
+            "profile" -> ProfileBody(repo)
             "lang" -> {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("" to t("Как в системе"), "ru" to "Русский", "en" to "English").forEach { (code, title) ->
@@ -368,6 +494,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (hasAccess && status.isNotEmpty()) Hint(status)
+            if (sdk != HealthConnectClient.SDK_AVAILABLE) Hint(Compat.hcHelp())
             Spacer(Modifier.height(8.dp))
             when (sdk) {
                 HealthConnectClient.SDK_AVAILABLE -> {
@@ -391,7 +518,10 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                 HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> Button(onClick = {
                     act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata")))
                 }, Modifier.fillMaxWidth()) { Text(t("Открыть Google Play")) }
-                else -> {}
+                else -> if (!Compat.hcBuiltIn) OutlinedButton(onClick = {
+                    runCatching { act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))) }
+                        .onFailure { notify(t("Google Play не найден")) }
+                }, Modifier.fillMaxWidth()) { Text(t("Открыть Google Play")) }
             }
             Spacer(Modifier.height(8.dp))
             Hint(
@@ -412,7 +542,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             val pkg = prefs.osPackage
             val connected = pkg.isNotEmpty() && act.openScale.granted(pkg)
             when {
-                installed.isEmpty() -> Hint(t("openScale не найден на телефоне. Установите openScale (F-Droid или Google Play) и подключите в нём весы."))
+                installed.isEmpty() -> Hint(t("openScale на телефоне не найден. Это бесплатное приложение для умных весов — через него Tabita получает взвешивания."))
                 !connected -> {
                     Hint(t("Будут загружаться все показатели взвешиваний: вес, жир, вода, мышцы, кости, ИМТ и другие."))
                     Spacer(Modifier.height(6.dp))
@@ -445,6 +575,9 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     Hint(t("Новые взвешивания подтягиваются при каждом открытии приложения."))
                 }
             }
+            // 5.41: пошаговая инструкция; раскрыта, пока весы не подключены
+            Spacer(Modifier.height(8.dp))
+            OpenScaleGuideCard(open0 = !connected)
         }
             "notif" -> {
             SwitchRow(t("Напоминать заполнить день"), prefs.reminderOn) { on ->
@@ -458,6 +591,28 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     }) { Text(hhmm(prefs.reminderTime)) }
                 }
                 SwitchRow(t("Только если что-то не записано"), prefs.reminderOnlyIfEmpty) { prefs.reminderOnlyIfEmpty = it; changed() }
+            }
+            Spacer(Modifier.height(8.dp))
+            // 5.65: воскресный обзор недели
+            SwitchRow(t("Обзор недели по воскресеньям"), prefs.weeklyOn) { on ->
+                if (on) withNotifPermission { prefs.weeklyOn = true; changed() } else { prefs.weeklyOn = false; changed() }
+            }
+            Hint(t("В 19:00: сон, активность, вес и белок за неделю, одна правка на следующую и главная находка из «Что влияет»."))
+            Spacer(Modifier.height(8.dp))
+            SwitchRow(t("Напоминать об отбое"), prefs.bedOn) { on ->
+                if (on) withNotifPermission { prefs.bedOn = true; changed() } else { prefs.bedOn = false; changed() }
+            }
+            if (prefs.bedOn) {
+                val (bedT, rr) = remember(tick) { Reminders.bedtimeAt(act.repo, prefs, java.time.LocalDateTime.now()) }
+                Hint(t("Ближайший отбой — %s: по «Ритму дня» (подъём %s%s, минус нужный сон). Меняется сам вместе с режимом и будильником.",
+                    clockOf(bedT.hour * 60 + bedT.minute), clockOf(rr.nextWake), if (rr.alarm) t(" по будильнику") else ""))
+                Text(t("Предупредить заранее: %s", if (prefs.bedLead == 0) t("нет") else t("за %d мин", prefs.bedLead)))
+                @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0, 30, 60, 90).forEach { m ->
+                        FilterChip(prefs.bedLead == m, { prefs.bedLead = m; changed() }, label = { Text(if (m == 0) t("нет") else t("%d мин", m), maxLines = 1, softWrap = false) })
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
             SwitchRow(t("Мотивирующие уведомления в случайное время"), prefs.motivOn) { on ->
@@ -501,31 +656,33 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             Hint(t("Если уведомления не приходят, отключите для Tabita экономию заряда в настройках телефона."))
         }
             "ai" -> {
+            // 5.41: одно короткое пояснение вместо текста + плашки про VPN; чипы короче, GigaChat первым
             Hint(
                 t(
-                    "Фото блюда отправляется в выбранный сервис распознавания изображений, он возвращает оценку калорий и БЖУ. " +
-                        "Нужен ваш API-ключ этого сервиса; оплата — по его тарифам (обычно доли цента за фото). Оценка приблизительная."
+                    "Фото или описание блюда уходит в выбранный сервис ИИ, он оценивает калории, БЖУ и ГИ. " +
+                        "Нужен ваш ключ этого сервиса, оценка приблизительная. Из России без VPN работает GigaChat."
                 )
             )
             Spacer(Modifier.height(6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val presets = listOf(
+                    Triple("GigaChat", "gigachat", GigaChat.BASE) to "GigaChat-2-Pro",
                     Triple("OpenRouter", "openai", "https://openrouter.ai/api/v1") to "google/gemini-2.5-flash",
                     Triple("OpenAI", "openai", "https://api.openai.com/v1") to "gpt-4o-mini",
                     Triple("Claude", "anthropic", "https://api.anthropic.com") to "claude-haiku-5-5",
-                    Triple(t("GigaChat (Сбер)"), "gigachat", GigaChat.BASE) to "GigaChat-2-Pro",
                 )
                 presets.forEach { (p, model) ->
                     FilterChip(selected = prefs.aiProvider == p.second && prefs.aiUrl == p.third, onClick = {
                         prefs.aiProvider = p.second; prefs.aiUrl = p.third; prefs.aiModel = model; tick++
-                    }, label = { Text(p.first) })
+                    }, label = { Text(p.first, maxLines = 1, softWrap = false) })
                 }
                 FilterChip(
                     selected = prefs.aiProvider == "openai" && prefs.aiUrl !in listOf("https://openrouter.ai/api/v1", "https://api.openai.com/v1"),
                     onClick = { prefs.aiProvider = "openai"; prefs.aiUrl = ""; tick++ },
-                    label = { Text(t("Другой (OpenAI-совместимый)")) },
+                    label = { Text(t("Другой"), maxLines = 1, softWrap = false) },
                 )
             }
+            AiGuideCard(AiGuide.idFor(prefs.aiProvider, prefs.aiUrl), open0 = !prefs.aiReady)
             if (prefs.aiProvider == "openai") {
                 var url by remember(tick) { mutableStateOf(prefs.aiUrl) }
                 OutlinedTextField(url, { url = it; prefs.aiUrl = it.trim() }, Modifier.fillMaxWidth(),
@@ -534,9 +691,6 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             var model by remember(tick) { mutableStateOf(prefs.aiModel) }
             OutlinedTextField(model, { model = it; prefs.aiModel = it.trim() }, Modifier.fillMaxWidth(),
                 label = { Text(t("Модель")) }, singleLine = true)
-            if (prefs.aiProvider == "gigachat") Hint(
-                t("GigaChat работает из России без VPN; у физлиц есть бесплатный пакет токенов. Ключ: developers.sber.ru → Studio → ваш проект GigaChat API → Настройки API → «Получить ключ» — скопируйте «Ключ авторизации». Модели с распознаванием фото: GigaChat-2-Pro, GigaChat-2-Max.")
-            )
             var key by remember { mutableStateOf(prefs.aiKey) }
             OutlinedTextField(key, { key = it; prefs.aiKey = it.trim() }, Modifier.fillMaxWidth(),
                 label = { Text(if (prefs.aiProvider == "gigachat") t("Ключ авторизации") else t("API-ключ")) },
@@ -603,7 +757,11 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) { Icon(Icons.Filled.DeleteForever, null); Spacer(Modifier.width(8.dp)); Text(t("Удалить все данные")) }
             }
+            "meal_tpl" -> MealTplsBody(act, notify)
+            "ref" -> ReferenceBody()
+            "ref_rhythm" -> ReferenceBody(1)
             "about" -> {
+            OutlinedButton(onClick = { open = null; act.showIntro.value = true }, modifier = Modifier.fillMaxWidth()) { Text(t("Пройти знакомство заново")) }
                 AboutBody()
                 Spacer(Modifier.height(16.dp))
                 SubTitle(t("Журнал работы (логи)"))
@@ -631,6 +789,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
         }
     }
 
+    val profile = collect(repo.profile)
     val hasHc = granted.any { it in health.permissions }
     val osOn = prefs.osPackage.isNotEmpty() && act.openScale.granted(prefs.osPackage)
     val groups = listOf(
@@ -638,6 +797,10 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             SetRow("appearance", Icons.Filled.Palette, t("Оформление"),
                 listOf(when (Look.mode) { "light" -> t("Светлая"); "dark" -> t("Тёмная"); else -> t("Как в системе") },
                     if (Look.accent == "dynamic") t("цвета обоев") else t(Look.accents.firstOrNull { it.first == Look.accent }?.second?.first ?: "")).filter { it.isNotBlank() }.joinToString(" · ")),
+            SetRow("rhythm", Icons.Filled.Schedule, t("Ритм дня"),
+                listOfNotNull(if (prefs.rhythmView == "chart") t("дорожками") else t("кругом"),
+                    if (prefs.rhythmStrip) t("полоса над плитками") else null).joinToString(" · ")),
+            SetRow("profile", Icons.Filled.Person, t("Профиль: рост и возраст"), profileSummary(profile)),
             SetRow("lang", Icons.Filled.Language, t("Язык и валюта"),
                 (when (prefs.lang) { "ru" -> "Русский"; "en" -> "English"; else -> t("Как в системе") }) + " · " + prefs.currency),
         ),
@@ -648,20 +811,37 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     hasHc -> t("подключено: %d из %d", granted.count { it in health.permissions }, health.permissions.size)
                     else -> t("не подключено")
                 }, ok = hasHc),
+            SetRow("train_hc", Icons.Filled.FavoriteBorder, t("Запись тренировок в Health Connect"), org.maittaa.tabita.train.TrainSummary.hc(act.train)),
             SetRow("os", Icons.Filled.MonitorWeight, t("Весы (openScale)"),
                 if (osOn) t("подключено") else t("не подключено"), ok = osOn),
         ),
+        t("Тренировки") to run {
+            val tm = act.train
+            listOf(
+                SetRow("train_set", Icons.Filled.Tune, t("Настройки тренировок"), org.maittaa.tabita.train.TrainSummary.set(tm)),
+                SetRow("train_eq", Icons.Filled.Backpack, t("Инвентарь дома"), org.maittaa.tabita.train.TrainSummary.eq(tm)),
+                SetRow("train_gym", Icons.Filled.FitnessCenter, t("Зал"), org.maittaa.tabita.train.TrainSummary.gym(tm)),
+                SetRow("train_use", Icons.Filled.MonitorHeart, t("Что из дневника учитывать"), org.maittaa.tabita.train.TrainSummary.use(tm)),
+            )
+        },
         t("Настройки") to listOf(
+            SetRow("meal_tpl", Icons.Filled.BookmarkAdded, t("Шаблоны еды"),
+                MealTpls.all(prefs).let { l -> if (l.isEmpty()) t("нет — сохраняются из приёма пищи") else l.take(3).joinToString(", ") { it.name } + if (l.size > 3) " +" + (l.size - 3) else "" }),
             SetRow("notif", Icons.Filled.Notifications, t("Уведомления"),
                 listOfNotNull(if (prefs.reminderOn) t("напоминание в %s", hhmm(prefs.reminderTime)) else null,
+                    if (prefs.bedOn) t("отбой") else null,
                     if (prefs.motivOn) t("мотивация %d/день", prefs.motivPerDay) else null).joinToString(" · ").ifEmpty { t("выключены") }),
             SetRow("ai", Icons.Filled.AutoAwesome, t("Калории по фото (ИИ)"),
                 if (prefs.aiReady) aiTitle(prefs) + " · " + t("готово") else t("ключ не задан"), ok = prefs.aiReady),
             SetRow("lock", Icons.Filled.Lock, t("Защита входа"),
                 if (prefs.lockEnabled) t("вход по %s", listOfNotNull(if (prefs.biometric && act.canUseDeviceAuth()) t("отпечатку") else null, if (prefs.hasPin) "PIN" else null).joinToString(t(" или "))) else t("выключена")),
-            SetRow("data", Icons.Filled.Save, t("Данные: экспорт и копия"), t("CSV для Excel, резервная копия с фото")),
+        ),
+        t("Резервное копирование") to listOf(
+            SetRow("data", Icons.Filled.Save, t("Дневник: экспорт и копия"), t("CSV для Excel, резервная копия с фото и тренировками")),
+            SetRow("train_data", Icons.Filled.FitnessCenter, t("Тренировки: копия и таблица"), org.maittaa.tabita.train.TrainSummary.data(act.train)),
         ),
         t("Информация") to listOf(
+            SetRow("ref", Icons.AutoMirrored.Filled.MenuBook, t("Справочник"), t("продукты: калории, БЖУ, ГИ · суточные ритмы")),
             SetRow("about", Icons.Filled.Info, t("О приложении"), "Tabita " + BuildConfig.VERSION_NAME + " · " + t("журнал работы")),
         ),
     )
@@ -691,8 +871,13 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
     VerticalScrollbar(settingsScroll, Modifier.align(Alignment.CenterEnd))
     }
 
-    open?.let { id ->
-        val row = groups.flatMap { it.second }.firstOrNull { it.id == id }
+    open?.takeIf { it.startsWith("train_") }?.let { id ->
+        org.maittaa.tabita.train.LocalTrainActions.current?.let { a ->
+            org.maittaa.tabita.train.TrainSettings(id, act.train, a) { open = null }
+        }
+    }
+    open?.takeIf { !it.startsWith("train_") }?.let { id ->
+        val row = groups.flatMap { it.second }.firstOrNull { it.id == id.removeSuffix("_rhythm") }
         androidx.compose.ui.window.Dialog(onDismissRequest = { open = null },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
             androidx.compose.material3.Surface(Modifier.fillMaxWidth(0.95f).padding(vertical = 24.dp),
@@ -748,8 +933,12 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                     val ok = runCatching {
                         act.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
                     }.getOrNull()?.let { repo.importBackup(it) } ?: false
-                    notify(if (ok) t("Данные восстановлены") else t("Файл не распознан"))
                     confirmImport = null
+                    if (ok) {
+                        // 5.32: перезапуск — чтобы тренировки и настройки из копии подхватились, а не перезаписались старыми из памяти
+                        android.widget.Toast.makeText(act, t("Данные восстановлены — перезапускаю"), android.widget.Toast.LENGTH_SHORT).show()
+                        org.maittaa.tabita.train.restartApp(act)
+                    } else notify(t("Файл не распознан"))
                 }) { Text(t("Заменить")) }
             },
             dismissButton = { TextButton(onClick = { confirmImport = null }) { Text(t("Отмена")) } },
@@ -784,7 +973,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TimeDialog(title: String, minutes: Int, onSet: (Int) -> Unit, onDismiss: () -> Unit) {
+internal fun TimeDialog(title: String, minutes: Int, onSet: (Int) -> Unit, onDismiss: () -> Unit) {
     val st = rememberTimePickerState(minutes / 60, minutes % 60, is24Hour = true)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -797,14 +986,19 @@ private fun TimeDialog(title: String, minutes: Int, onSet: (Int) -> Unit, onDism
 
 /** CSV с разделителем «;» и BOM — корректно открывается в русском Excel. */
 fun buildCsv(repo: Repo): String {
-    val tmpl = repo.template.value
+    // 5.32: плитки без значений (советы, цель, тренировка) — не столбцы
+    val tmpl = repo.template.value.filter { it.type != ItemType.TIPS && it.type != ItemType.GOAL && it.type != ItemType.TRAINING && it.type != ItemType.RHYTHM }
     val entries = repo.entries.value
     fun esc(s: String) = if (s.any { it == ';' || it == '"' || it == '\n' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
     val sb = StringBuilder("﻿")
     val header = listOf(t("Дата")) + tmpl.flatMap { item ->
         val n = item.displayName + if (item.unit.isNotEmpty()) ", ${item.displayUnit}" else ""
         when (item.type) {
-            ItemType.MEALS -> listOf(n, "$n, ${t("ккал")}", "$n, ${t("ГН")}", "$n, ${t("гликемическая оценка")}")
+            ItemType.MEALS -> listOf(n, "$n, ${t("ккал")}", "$n, ${t("белки")}, ${t("г")}", "$n, ${t("жиры")}, ${t("г")}", "$n, ${t("углеводы")}, ${t("г")}",
+                "$n, ${t("ГН")}", "$n, ${t("гликемическая оценка")}")
+            ItemType.WELLBEING -> listOf("$n, ${t("общий балл")}")
+            ItemType.DURATION -> if (item.source == Source.HC_SLEEP) listOf(n, "$n, ${t("отбой")}", "$n, ${t("подъём")}", "$n, ${t("дневной сон")}") else listOf(n)
+            ItemType.NUMBER -> if (item.source == Source.HC_EXERCISE) listOf(n, "$n, ${t("виды")}") else listOf(n)
             ItemType.EXPENSES -> listOf(n, "$n, ${t("расход")}", "$n, ${t("доход")}")
             ItemType.BODY -> bodyIds(repo, item.id).map { (_, m) -> m.name + bodyUnit(m.unit).let { if (it.isEmpty()) "" else ", $it" } }
             else -> listOf(n)
@@ -822,6 +1016,9 @@ fun buildCsv(repo: Repo): String {
                     listOf(
                         meals.joinToString("; ") { m -> t(m.kind) + ": " + m.text.ifBlank { "—" } + (m.kcal?.let { " (${formatNumber(it)} ${t("ккал")})" } ?: "") },
                         mealKcal(meals)?.let { formatNumber(it) } ?: "",
+                        mealMacros(meals)?.protein?.let { formatNumber(Math.round(it * 10) / 10.0) } ?: "",
+                        mealMacros(meals)?.fat?.let { formatNumber(Math.round(it * 10) / 10.0) } ?: "",
+                        mealMacros(meals)?.carbs?.let { formatNumber(Math.round(it * 10) / 10.0) } ?: "",
                         Glycemic.day(meals)?.let { formatNumber(Math.round(it.load).toDouble()) } ?: "",
                         Glycemic.day(meals)?.score?.toString() ?: "",
                     )
@@ -834,6 +1031,21 @@ fun buildCsv(repo: Repo): String {
                         l.filter { it.income }.sumOf { it.total }.takeIf { it > 0 }?.let { formatNumber(it) } ?: "",
                     )
                 }
+                ItemType.WELLBEING -> listOf(repo.checkups.value.filter { it.date == d }.maxByOrNull { it.at }?.overall?.let { Math.round(it).toString() } ?: "")
+                ItemType.DURATION -> {
+                    val main = v?.toIntOrNull()?.let { "%d:%02d".format(it / 60, it % 60) } ?: (v ?: "")
+                    if (item.source != Source.HC_SLEEP) listOf(main) else {
+                        val sd = SleepDetail.parse(day[SleepDetail.key(item.id)])
+                        val z = java.time.ZoneId.systemDefault()
+                        fun hm(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(z).toLocalTime().let { "%d:%02d".format(it.hour, it.minute) }
+                        val nap = day[Sleep.napKey(item.id)]?.toDoubleOrNull()?.toInt()
+                        listOf(main, sd?.let { hm(it.start) } ?: "", sd?.let { hm(it.end) } ?: "", nap?.let { "%d:%02d".format(it / 60, it % 60) } ?: "")
+                    }
+                }
+                ItemType.NUMBER -> if (item.source == Source.HC_EXERCISE) listOf(
+                    v?.let { if (I18n.isEn) it else it.replace('.', ',') } ?: "",
+                    Workouts.sessions(day, item.id).joinToString(", ") { ss -> Workouts.kind(ss.kind).title + " " + ss.min + " " + t("мин") },
+                ) else listOf(v?.let { if (I18n.isEn) it else it.replace('.', ',') } ?: "")
                 ItemType.BODY -> {
                     val d = BodyDay.parse(v)
                     bodyIds(repo, item.id).map { (id, _) -> d?.metrics?.firstOrNull { it.id == id }?.let { formatNumber(Math.round(it.value * 10) / 10.0) } ?: "" }

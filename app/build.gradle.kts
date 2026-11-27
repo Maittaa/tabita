@@ -12,8 +12,8 @@ android {
         applicationId = "org.maittaa.tabita"
         minSdk = 28
         targetSdk = 35
-        versionCode = 26
-        versionName = "5.17.2"
+        versionCode = 93
+        versionName = "5.66"
     }
 
     signingConfigs {
@@ -35,6 +35,13 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             signingConfig = signingConfigs.getByName("release")
+        }
+        // 5.32: копия для проверки «с нуля» — свой пакет и имя, ставится рядом с основной и не трогает её данные
+        create("fresh") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".fresh"
+            versionNameSuffix = "-fresh"
+            matchingFallbacks += listOf("release")
         }
     }
     compileOptions {
@@ -58,6 +65,9 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.2")
+    // 5.23: тренировки (бывший Sink) — ViewModel и compose-обвязка жизненного цикла
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
     implementation("androidx.health.connect:connect-client:1.1.0")
     implementation("androidx.biometric:biometric:1.1.0")
     // biometric тянет fragment 1.2.5, который падает на кодах запросов разрешений (>16 бит) — нужна новая версия

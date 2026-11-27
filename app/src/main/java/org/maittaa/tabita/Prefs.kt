@@ -8,7 +8,47 @@ import java.security.SecureRandom
 
 /** Настройки приложения (не путать с данными дневника). */
 class Prefs(context: Context) {
+    companion object {
+        /** Ключи, которые не попадают в резервную копию. */
+        val NO_BACKUP = setOf("pinHash", "pinSalt", "lock", "bio", "secure", "aiKey")
+    }
     val sp: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    /**
+     * Настройки в резервную копию (5.32). Не переносятся: PIN, блокировка и биометрия (защита — у каждого телефона своя)
+     * и ключ ИИ (секрет; провайдер, модель и адрес — переносятся).
+     */
+    fun backupJson(): String {
+        val o = org.json.JSONObject().put("v", 1)
+        val p = org.json.JSONObject()
+        sp.all.forEach { (k, v) ->
+            if (k in NO_BACKUP || v == null) return@forEach
+            p.put(k, org.json.JSONObject().put("t", when (v) {
+                is Boolean -> "b"; is Int -> "i"; is Long -> "l"; is Float -> "f"; is Set<*> -> "s"; else -> "str"
+            }).put("v", if (v is Set<*>) JSONArray(v.toList()) else v))
+        }
+        return o.put("prefs", p).toString()
+    }
+
+    fun restoreJson(text: String) {
+        val p = org.json.JSONObject(text).getJSONObject("prefs")
+        val e = sp.edit()
+        // всё, что переносится, заменяем; защиту и ключ ИИ оставляем как есть
+        sp.all.keys.filter { it !in NO_BACKUP }.forEach { e.remove(it) }
+        p.keys().forEach { k ->
+            if (k in NO_BACKUP) return@forEach
+            val x = p.getJSONObject(k)
+            when (x.getString("t")) {
+                "b" -> e.putBoolean(k, x.getBoolean("v"))
+                "i" -> e.putInt(k, x.getInt("v"))
+                "l" -> e.putLong(k, x.getLong("v"))
+                "f" -> e.putFloat(k, x.getDouble("v").toFloat())
+                "s" -> e.putStringSet(k, x.getJSONArray("v").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() })
+                else -> e.putString(k, x.getString("v"))
+            }
+        }
+        e.commit()
+    }
 
     // язык: "" — как в системе, "ru", "en"
     var lang: String
@@ -62,6 +102,48 @@ class Prefs(context: Context) {
     var wbSelected: String
         get() = sp.getString("wbSelected", "phq8")!!
         set(v) = sp.edit().putString("wbSelected", v).apply()
+    /** Графики (5.24): выбранная группа по смыслу ("all" — все). */
+    /** Справочник продуктов (5.27): избранное (ключи Food.key), сколько раз добавлен продукт, сортировка. */
+    var foodFav: Set<String>
+        get() = sp.getStringSet("foodFav", emptySet())?.toSet() ?: emptySet()
+        set(v) = sp.edit().putStringSet("foodFav", v).apply()
+    var foodUse: Map<String, Int>
+        get() = runCatching { org.json.JSONObject(sp.getString("foodUse", "{}") ?: "{}").let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } }.getOrDefault(emptyMap())
+        set(v) = sp.edit().putString("foodUse", org.json.JSONObject(v as Map<*, *>).toString()).apply()
+    var foodSort: Int
+        get() = sp.getInt("foodSort", 0)
+        set(v) = sp.edit().putInt("foodSort", v).apply()
+    /** Подсказки на «Сегодня» после знакомства (5.36): про жесты плиток и про кнопки внизу. */
+    var tileHint: Boolean
+        get() = sp.getBoolean("tileHint", false)
+        set(v) = sp.edit().putBoolean("tileHint", v).apply()
+    var tileBtnHint: Boolean
+        get() = sp.getBoolean("tileBtnHint", false)
+        set(v) = sp.edit().putBoolean("tileBtnHint", v).apply()
+    /** Знакомство при первом запуске пройдено (5.35). */
+    var introDone: Boolean
+        get() = sp.getBoolean("introDone", false)
+        set(v) = sp.edit().putBoolean("introDone", v).apply()
+    /** Раздел «Программы» (5.30): 0 — план, 1 — графики, 2 — самочувствие. */
+    var programSub: Int
+        get() = sp.getInt("programSub", 0)
+        set(v) = sp.edit().putInt("programSub", v).apply()
+    /** План (5.28): цель, дата начала, вес и безжировая масса на старте. */
+    var planGoal: String
+        get() = sp.getString("planGoal", "") ?: ""
+        set(v) = sp.edit().putString("planGoal", v).apply()
+    var planStart: String
+        get() = sp.getString("planStart", "") ?: ""
+        set(v) = sp.edit().putString("planStart", v).apply()
+    var planW0: Double
+        get() = sp.getFloat("planW0", 0f).toDouble()
+        set(v) = sp.edit().putFloat("planW0", v.toFloat()).apply()
+    var planLean0: Double
+        get() = sp.getFloat("planLean0", 0f).toDouble()
+        set(v) = sp.edit().putFloat("planLean0", v.toFloat()).apply()
+    var statCtx: String
+        get() = sp.getString("statCtx", "all") ?: "all"
+        set(v) = sp.edit().putString("statCtx", v).apply()
     /** Экран графиков: 0 — графики, 1 — месяц. */
     var statView: Int
         get() = sp.getInt("statView", 0)
@@ -70,6 +152,14 @@ class Prefs(context: Context) {
         runCatching { ChartType.valueOf(sp.getString("ct_$key", null)!!) }.getOrDefault(def)
     fun setChartType(key: String, t: ChartType) = sp.edit().putString("ct_$key", t.name).apply()
     /** Засчитывать ходьбу как тренировку (по умолчанию нет: ходьба и так видна в шагах) */
+    /** 5.42: норма воды считается сама каждый день (вес, тренировки, шаги). */
+    var waterAuto: Boolean
+        get() = sp.getBoolean("waterAuto", true)
+        set(v) = sp.edit().putBoolean("waterAuto", v).apply()
+    /** 5.42: замеры потери пота — JSON-массив Hydration.Sample. */
+    var sweatLog: String
+        get() = sp.getString("sweatLog", "") ?: ""
+        set(v) = sp.edit().putString("sweatLog", v).apply()
     var countWalking: Boolean
         get() = sp.getBoolean("countWalking", false)
         set(v) = sp.edit().putBoolean("countWalking", v).apply()
@@ -85,6 +175,129 @@ class Prefs(context: Context) {
     var sleepSelected: String
         get() = sp.getString("sleepSel", "score") ?: "score"
         set(v) = sp.edit().putString("sleepSel", v).apply()
+    /** Советы дня (5.20): отключённые категории и скрытые сегодня советы ("дата|id"). */
+    var tipsOff: Set<String>
+        get() = sp.getStringSet("tipsOff", emptySet())!!.toSet()
+        set(v) = sp.edit().putStringSet("tipsOff", v).apply()
+    /** Как часто менять совет в плитке, секунды (0 — не менять); по умолчанию 5 минут (5.22.1). */
+    /** 5.45: какие данные учитывает ритм дня (Rhythm.SOURCES); по умолчанию все. */
+    var rhythmSrc: Set<String>
+        get() = sp.getString("rhythmSrc", null)?.split(',')?.filter { it.isNotBlank() }?.toSet() ?: RhythmSrc.ALL
+        set(v) = sp.edit().putString("rhythmSrc", v.joinToString(",")).apply()
+
+    /** 5.51: свой максимальный пульс (0 — по формуле 220 − возраст). */
+    var hrMax: Int
+        get() = sp.getInt("hrMax", 0)
+        set(v) = sp.edit().putInt("hrMax", v).apply()
+    /** 5.51: незаконченное занятие с таймером (JSON CardioDraft). */
+    var cardioDraft: String?
+        get() = sp.getString("cardioDraft", null)
+        set(v) = sp.edit().putString("cardioDraft", v).apply()
+    /** 5.51: настройки таймера: тихо для соседей, минут основной части, интервалы. */
+    var cardioQuiet: Boolean
+        get() = sp.getBoolean("cardioQuiet", true)
+        set(v) = sp.edit().putBoolean("cardioQuiet", v).apply()
+    var cardioMain: Int
+        get() = sp.getInt("cardioMain", 15)
+        set(v) = sp.edit().putInt("cardioMain", v).apply()
+    var cardioWork: Int
+        get() = sp.getInt("cardioWork", 30)
+        set(v) = sp.edit().putInt("cardioWork", v).apply()
+    var cardioRest: Int
+        get() = sp.getInt("cardioRest", 30)
+        set(v) = sp.edit().putInt("cardioRest", v).apply()
+    var cardioRounds: Int
+        get() = sp.getInt("cardioRounds", 10)
+        set(v) = sp.edit().putInt("cardioRounds", v).apply()
+
+    /** 5.53: свои комплексы йоги (JSON), самопроверки осанки (JSON), фильтр общей истории «Здоровья». */
+    var yogaCustom: String
+        get() = sp.getString("yogaCustom", "") ?: ""
+        set(v) = sp.edit().putString("yogaCustom", v).apply()
+    var yogaChecks: String
+        get() = sp.getString("yogaChecks", "") ?: ""
+        set(v) = sp.edit().putString("yogaChecks", v).apply()
+    var histFilter: String
+        get() = sp.getString("histFilter", "all") ?: "all"
+        set(v) = sp.edit().putString("histFilter", v).apply()
+
+    /** 5.56: недельный шаблон нагрузки (JSON WeekTpl: аэробная и йога по дням, цель активных минут). */
+    var weekTpl: String?
+        get() = sp.getString("weekTpl", null)
+        set(v) = sp.edit().putString("weekTpl", v).apply()
+    /** 5.56: поправка расхода по реальному тренду веса, ккал в день (0 — нет). */
+    var burnAdj: Int
+        get() = sp.getInt("burnAdj", 0)
+        set(v) = sp.edit().putInt("burnAdj", v).apply()
+    /** 5.56: когда принята поправка (дата ISO). */
+    var burnAdjAt: String?
+        get() = sp.getString("burnAdjAt", null)
+        set(v) = sp.edit().putString("burnAdjAt", v).apply()
+    /** 5.59.2: разделы в плитке «Отметки дня» подзаголовками (выкл — все отметки одной кучей). */
+    var checkSections: Boolean
+        get() = sp.getBoolean("checkSections", true)
+        set(v) = sp.edit().putBoolean("checkSections", v).apply()
+    /** 5.59.2: отметкам из набора самочувствия проставлено влияние на совет (однократно). */
+    var marksTrainSet: Boolean
+        get() = sp.getBoolean("marksTrainSet", false)
+        set(v) = sp.edit().putBoolean("marksTrainSet", v).apply()
+    /** 5.63: «Сравнить» в «Графиках»: первый и второй показатель, прошлый период. */
+    var cmpA: String?
+        get() = sp.getString("cmpA", null)
+        set(v) = sp.edit().putString("cmpA", v).apply()
+    var cmpB: String?
+        get() = sp.getString("cmpB", null)
+        set(v) = sp.edit().putString("cmpB", v).apply()
+    var cmpPrev: Boolean
+        get() = sp.getBoolean("cmpPrev", false)
+        set(v) = sp.edit().putBoolean("cmpPrev", v).apply()
+    /** 5.62: эксперименты (JSON Experiments). */
+    var experiments: String?
+        get() = sp.getString("experiments", null)
+        set(v) = sp.edit().putString("experiments", v).apply()
+    /** 5.57: шаблоны приёмов пищи (JSON MealTpls). */
+    var mealTpls: String?
+        get() = sp.getString("mealTpls", null)
+        set(v) = sp.edit().putString("mealTpls", v).apply()
+    /** 5.57: список покупок — неделя, отметки, свои позиции (JSON Shopping.State). */
+    var shopList: String?
+        get() = sp.getString("shopList", null)
+        set(v) = sp.edit().putString("shopList", v).apply()
+    /** 5.56: своя дата, к которой хочется дойти до цели (ISO), null — нет. */
+    var planDue: String?
+        get() = sp.getString("planDue", null)
+        set(v) = sp.edit().putString("planDue", v).apply()
+
+    /** 5.43: колонок в сетке плиток (4–6). */
+    var gridCols: Int
+        get() = sp.getInt("gridCols", 4).coerceIn(4, 6)
+        set(v) = sp.edit().putInt("gridCols", v.coerceIn(4, 6)).apply()
+    /** 5.43: вид ритма дня — "chart" (дорожки) или "dial" (круг 12 ч). */
+    var rhythmView: String
+        get() = sp.getString("rhythmView", "dial") ?: "dial"
+        set(v) = sp.edit().putString("rhythmView", v).apply()
+    /** 5.43: тонкая полоса ритма над плитками. */
+    var rhythmStrip: Boolean
+        get() = sp.getBoolean("rhythmStrip", false)
+        set(v) = sp.edit().putBoolean("rhythmStrip", v).apply()
+
+    var tipsEvery: Int
+        get() = sp.getInt("tipsEvery", 300)
+        set(v) = sp.edit().putInt("tipsEvery", v).apply()
+    /** Подъём и отбой вручную, минуты от полуночи; −1 — по данным сна (5.22.2). */
+    var rhythmWake: Int
+        get() = sp.getInt("rhWake", -1)
+        set(v) = sp.edit().putInt("rhWake", v).apply()
+    var rhythmBed: Int
+        get() = sp.getInt("rhBed", -1)
+        set(v) = sp.edit().putInt("rhBed", v).apply()
+    var tipsHidden: Set<String>
+        get() = sp.getStringSet("tipsHidden", emptySet())!!.toSet()
+        set(v) = sp.edit().putStringSet("tipsHidden", v).apply()
+    /** Выбранный показатель в карточке «БЖУ» (5.19.5) */
+    var foodSelected: String
+        get() = sp.getString("foodSel", "") ?: ""
+        set(v) = sp.edit().putString("foodSel", v).apply()
     /** Выбранный показатель в группе «Весы» */
     var bodySelected: String
         get() = sp.getString("bodySel", "") ?: ""
@@ -141,6 +354,23 @@ class Prefs(context: Context) {
     var reminderOnlyIfEmpty: Boolean
         get() = sp.getBoolean("remEmpty", true)
         set(v) = sp.edit().putBoolean("remEmpty", v).apply()
+
+    /** Уведомления об отбое (5.33) и за сколько минут предупреждать (0 — только «пора спать»). */
+    var bedOn: Boolean
+        get() = sp.getBoolean("bedOn", false)
+        set(v) = sp.edit().putBoolean("bedOn", v).apply()
+    var bedLead: Int
+        get() = sp.getInt("bedLead", 60)
+        set(v) = sp.edit().putInt("bedLead", v).apply()
+
+    /** 5.65: воскресный обзор недели уведомлением (19:00). */
+    var weeklyOn: Boolean
+        get() = sp.getBoolean("weeklyOn", true)
+        set(v) = sp.edit().putBoolean("weeklyOn", v).apply()
+    /** 5.65: последняя показанная на «Сегодня» находка: «название|дата». Новая находка видна один день. */
+    var findingSeen: String
+        get() = sp.getString("findSeen", "") ?: ""
+        set(v) = sp.edit().putString("findSeen", v).apply()
 
     var motivOn: Boolean
         get() = sp.getBoolean("motOn", false)

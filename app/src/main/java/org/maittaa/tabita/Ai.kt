@@ -23,9 +23,23 @@ object Ai {
             (if (hint.isNotBlank()) "User's clarification — treat it as reliable and prefer it over visual guessing " +
                 "(plate or glass size, volume, weight, ingredient proportions in percent, cooking method): \"$hint\". " +
                 "If proportions or volume are given, compute the amount of each ingredient from them. " else "") +
+            (FoodDb.mineForAi().takeIf { it.isNotBlank() }?.let { "User's own products with exact label values — when the meal mentions one of them, use these numbers: $it. " } ?: "") +
+            "Work ingredient by ingredient. Strict rules: " +
+            "0) A measuring scoop (\"мерная ложка\", scoop) is NOT a serving: labels often define one serving as 2–3 scoops. " +
+            "Convert by grams: 1 scoop × scoop weight, never 1 scoop = 1 serving. If the scoop weight is unknown, take ~8–9 g of powder per scoop " +
+            "(~4–5 g for fiber/tea powders). A cap of liquid concentrate (\"колпачок\") ≈ 5 ml. " +
+            "1) Never invent nutrients. Water, plain tea, black coffee, mineral water and ice have 0 kcal and 0 g of everything. " +
+            "2) For branded or packaged products (Herbalife, protein powders, instant drinks, bars, yogurts) use the manufacturer's label per serving, " +
+            "scaled to the stated amount. Instant tea, coffee and herbal drink powders give only a few kcal and practically no protein or fat " +
+            "(e.g. 3 g of instant herbal drink powder in 250 ml water ≈ 5–10 kcal, protein 0 g, fat 0 g). " +
+            "3) protein_g + fat_g + carbs_g of an ingredient can never exceed its weight in grams; for a dissolved powder count only the powder's weight. " +
+            "4) kcal must match 4*protein + 4*carbs + 9*fat (± fiber and alcohol). " +
+            "5) If a nutrient is absent or unknown, put 0 instead of guessing. " +
             "Answer ONLY with JSON, no markdown: " +
-            "{\"description\": \"short list of dishes with estimated grams, in ${if (I18n.isEn) "English" else "Russian"}\", " +
-            "\"kcal\": number, \"protein_g\": number, \"fat_g\": number, \"carbs_g\": number, " +
+            "{\"items\": [{\"name\": string, \"g\": number (weight in grams; for drinks — of the dry/solid part only, water = its volume), " +
+            "\"kcal\": number, \"protein_g\": number, \"fat_g\": number, \"carbs_g\": number}], " +
+            "\"description\": \"short list of dishes with estimated grams, in ${if (I18n.isEn) "English" else "Russian"}\", " +
+            "\"kcal\": number, \"protein_g\": number, \"fat_g\": number, \"carbs_g\": number (totals = sums of items), " +
             "\"gi\": number (glycemic index of the whole meal, 0-100, each food's GI weighted by its share of carbohydrates; " +
             "account for cooking, fat, protein and fiber), \"gl\": number (glycemic load = gi * carbs_g / 100)}"
         )
@@ -71,14 +85,70 @@ object Ai {
             resp.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
         }
         Log.d("AI", "ответ: $text")
+        parse(text)
+    }
+
+    /** Ингредиент из ответа модели. */
+    data class Part(val name: String, val g: Double?, val kcal: Double, val protein: Double, val fat: Double, val carbs: Double)
+
+    /**
+     * Проверка ингредиента (5.19): модели (особенно GigaChat) «досочиняют» белок и жир.
+     * 1) Б+Ж+У не больше веса ингредиента — иначе пропорционально уменьшаем.
+     * 2) Энергия из БЖУ не больше калорийности (с запасом 25 % + 3 ккал на клетчатку и округления) — иначе уменьшаем БЖУ.
+     */
+    fun sanitize(p: Part): Part {
+        var (pr, f, c) = Triple(p.protein.coerceAtLeast(0.0), p.fat.coerceAtLeast(0.0), p.carbs.coerceAtLeast(0.0))
+        val kcal = p.kcal.coerceAtLeast(0.0)
+        val mass = pr + f + c
+        if (p.g != null && p.g >= 0 && mass > p.g) {
+            val k = if (mass > 0) p.g / mass else 0.0
+            pr *= k; f *= k; c *= k
+        }
+        val e = 4 * pr + 4 * c + 9 * f
+        if (e > kcal * 1.25 + 3) {
+            val k = if (e > 0) kcal / e else 0.0
+            pr *= k; f *= k; c *= k
+        }
+        if (pr != p.protein || f != p.fat || c != p.carbs)
+            Log.i("AI", "поправка «${p.name}»: Б ${p.protein}→${"%.1f".format(pr)}, Ж ${p.fat}→${"%.1f".format(f)}, У ${p.carbs}→${"%.1f".format(c)}")
+        return p.copy(kcal = kcal, protein = pr, fat = f, carbs = c)
+    }
+
+    /** Разбор ответа: если есть список ингредиентов — итоги считаем сами по проверенным позициям. */
+    fun parse(text: String): Estimate {
         if (text.indexOf('{') < 0 || text.lastIndexOf('}') < text.indexOf('{')) error(t("Модель ответила не в нужном формате: %s", text.take(120)))
         val json = JSONObject(text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1))
-        fun num(k: String) = json.optDouble(k).takeIf { !it.isNaN() }
-        Estimate(
-            kcal = num("kcal") ?: error(t("Модель не вернула калорийность")),
-            protein = num("protein_g"), fat = num("fat_g"), carbs = num("carbs_g"),
+        fun JSONObject.num(k: String) = optDouble(k).takeIf { !it.isNaN() }
+        val parts = json.optJSONArray("items")?.let { a ->
+            (0 until a.length()).mapNotNull { i -> a.optJSONObject(i) }.mapNotNull { o ->
+                val kcal = o.num("kcal") ?: return@mapNotNull null
+                sanitize(Part(o.optString("name"), o.num("g"), kcal, o.num("protein_g") ?: 0.0, o.num("fat_g") ?: 0.0, o.num("carbs_g") ?: 0.0))
+            }
+        }.orEmpty()
+        val gi = json.num("gi")?.coerceIn(0.0, 110.0)
+        if (parts.isNotEmpty()) {
+            val carbs = parts.sumOf { it.carbs }
+            fun r(v: Double) = Math.round(v * 10) / 10.0
+            return Estimate(
+                kcal = Math.round(parts.sumOf { it.kcal }).toDouble(),
+                protein = r(parts.sumOf { it.protein }), fat = r(parts.sumOf { it.fat }), carbs = r(carbs),
+                description = cleanMealText(json.opt("description")?.toString().orEmpty()).ifBlank {
+                    parts.joinToString(", ") { p -> p.name + (p.g?.let { " ~${Math.round(it)} г" } ?: "") }
+                },
+                gi = gi,
+                // нагрузку пересчитываем по исправленным углеводам
+                gl = gi?.let { r(it * carbs / 100) } ?: json.num("gl")?.coerceAtLeast(0.0),
+            )
+        }
+        // старый формат — только итоги; проверяем их как одно целое
+        val total = sanitize(Part("итого", null, json.num("kcal") ?: error(t("Модель не вернула калорийность")),
+            json.num("protein_g") ?: 0.0, json.num("fat_g") ?: 0.0, json.num("carbs_g") ?: 0.0))
+        return Estimate(
+            kcal = total.kcal,
+            protein = json.num("protein_g")?.let { total.protein }, fat = json.num("fat_g")?.let { total.fat },
+            carbs = json.num("carbs_g")?.let { total.carbs },
             description = cleanMealText(json.opt("description")?.toString().orEmpty()),
-            gi = num("gi")?.coerceIn(0.0, 110.0), gl = num("gl")?.coerceAtLeast(0.0),
+            gi = gi, gl = json.num("gl")?.coerceAtLeast(0.0),
         )
     }
 

@@ -3,7 +3,10 @@ package org.maittaa.tabita
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
@@ -24,7 +27,13 @@ class Health(private val context: Context) {
         HealthPermission.getReadPermission(ExerciseSessionRecord::class),
         HealthPermission.getReadPermission(RestingHeartRateRecord::class),
         HealthPermission.getReadPermission(WeightRecord::class),
+        // 5.51: пульс и дистанция тренировок — зоны, активные минуты, темп
+        HealthPermission.getReadPermission(HeartRateRecord::class),
+        HealthPermission.getReadPermission(DistanceRecord::class),
     )
+    val hrPermission = HealthPermission.getReadPermission(HeartRateRecord::class)
+    val distPermission = HealthPermission.getReadPermission(DistanceRecord::class)
+    val exercisePermission = HealthPermission.getReadPermission(ExerciseSessionRecord::class)
     val historyPermission = HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
 
     fun sdkStatus(): Int =
@@ -91,9 +100,14 @@ class Health(private val context: Context) {
                         val min = ((r.endTime.toEpochMilli() - r.startTime.toEpochMilli()) / 60000).toInt()
                         if (min <= 0) return@forEach
                         val d = r.startTime.atZone(zone).toLocalDate()
+                        val s0 = r.startTime.toEpochMilli(); val s1 = r.endTime.toEpochMilli()
+                        // 5.51: пульс за время тренировки и дистанция — если есть доступ
+                        val hist = if (hrPermission in granted) runCatching { heartHist(s0, s1) }.onFailure { Log.e("Health", "пульс тренировки", it) }.getOrNull() else null
+                        val dist = if (distPermission in granted) runCatching { distance(s0, s1) }.onFailure { Log.e("Health", "дистанция", it) }.getOrNull() else null
                         byDay.getOrPut(d) { mutableListOf() } += WorkoutSession(
-                            Workouts.fromHc(r.exerciseType).key, min, r.startTime.toEpochMilli(),
+                            Workouts.fromHc(r.exerciseType).key, min, s0,
                             r.title.orEmpty(), r.metadata.dataOrigin.packageName,
+                            hr = hist?.let { HrZones.avg(it) }, hrMax = hist?.keys?.maxOrNull(), hist = hist ?: emptyMap(), dist = dist,
                         )
                     }
                     token = resp.pageToken
@@ -162,6 +176,8 @@ class Health(private val context: Context) {
                 val end = rangeEnd.atZone(zone).toInstant()
                 // ключ: день + приложение-источник (чтобы не сложить один сон дважды)
                 val sessions = mutableMapOf<Pair<LocalDate, String>, MutableList<Sleep.RawSession>>()
+                // 5.25: дневной и вечерний сон (начался после 11:00 и закончился в тот же день) — отдельно от ночного
+                val naps = mutableMapOf<Pair<LocalDate, String>, MutableList<Sleep.RawSession>>()
                 var token: String? = null
                 do {
                     val resp = client.readRecords(
@@ -174,13 +190,22 @@ class Health(private val context: Context) {
                     resp.records.forEach { s ->
                         val day = s.endTime.atZone(zone).toLocalDate()
                         if (day < from || day > to) return@forEach
-                        sessions.getOrPut(day to s.metadata.dataOrigin.packageName) { mutableListOf() } += Sleep.RawSession(
+                        val nap = Sleep.isNap(s.startTime.toEpochMilli(), s.endTime.toEpochMilli(), zone)
+                        (if (nap) naps else sessions).getOrPut(day to s.metadata.dataOrigin.packageName) { mutableListOf() } += Sleep.RawSession(
                             s.startTime.toEpochMilli(), s.endTime.toEpochMilli(),
                             s.stages.map { Sleep.RawStage(it.startTime.toEpochMilli(), it.endTime.toEpochMilli(), it.stage) },
                         )
                     }
                     token = resp.pageToken
                 } while (token != null)
+                naps.entries.groupBy { it.key.first }.forEach { (d, list) ->
+                    val best = list.maxBy { e -> Sleep.combine(e.value).first }.value
+                    val min = Sleep.combine(best).first
+                    if (min > 0) items.forEach {
+                        result.getOrPut(d.key()) { mutableMapOf() }[Sleep.napKey(it.id)] = min.toString()
+                        result.getOrPut(d.key()) { mutableMapOf() }[Sleep.napTimeKey(it.id)] = best.sortedBy { s -> s.start }.joinToString(", ") { s -> Sleep.hhmm(s.start, zone) + "–" + Sleep.hhmm(s.end, zone) }
+                    }
+                }
                 sessions.entries.groupBy { it.key.first }.forEach { (d, list) ->
                     val best = list.map { it.key.second to Sleep.combine(it.value) }.maxBy { it.second.first }
                     val (minutes, detail) = best.second
@@ -192,5 +217,32 @@ class Health(private val context: Context) {
             }
         }
         return result
+    }
+
+    /** 5.51: время на каждом значении пульса за [startMs]..[endMs]; null — замеров нет. */
+    suspend fun heartHist(startMs: Long, endMs: Long): Map<Int, Int>? {
+        val samples = mutableListOf<Pair<Long, Int>>()
+        var token: String? = null
+        do {
+            val resp = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = HeartRateRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(java.time.Instant.ofEpochMilli(startMs), java.time.Instant.ofEpochMilli(endMs)),
+                    pageToken = token,
+                )
+            )
+            resp.records.forEach { r -> r.samples.forEach { samples += it.time.toEpochMilli() to it.beatsPerMinute.toInt() } }
+            token = resp.pageToken
+        } while (token != null)
+        return HrZones.histOf(samples, startMs, endMs).takeIf { it.isNotEmpty() }
+    }
+
+    /** 5.51: дистанция за [startMs]..[endMs], метры; null — нет записей. */
+    suspend fun distance(startMs: Long, endMs: Long): Int? {
+        val r = client.aggregate(
+            AggregateRequest(setOf(DistanceRecord.DISTANCE_TOTAL),
+                TimeRangeFilter.between(java.time.Instant.ofEpochMilli(startMs), java.time.Instant.ofEpochMilli(endMs)))
+        )
+        return r[DistanceRecord.DISTANCE_TOTAL]?.inMeters?.let { Math.round(it).toInt() }?.takeIf { it > 0 }
     }
 }

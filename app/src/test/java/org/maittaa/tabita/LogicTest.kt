@@ -34,7 +34,7 @@ class LogicTest {
         File(ctx.filesDir, "data.json").writeText(v1)
         val r = Repo(ctx)
         val ids = r.template.value.map { it.id }
-        assertEquals(listOf("sleep", "weight", "food", "money", "why", "water", "wb"), ids)
+        assertEquals(listOf("tips", "goal", "rhythm", "training", "sleep", "weight", "food", "money", "why", "water", "wb"), ids)  // 5.20: советы — первыми
         assertEquals(Source.HC_WEIGHT, r.template.value.first { it.id == "weight" }.source)
         assertEquals("420", r.entries.value["2026-11-10"]!!["sleep"])
         assertEquals("итог", r.monthNotes.value["2026-11"])
@@ -50,7 +50,7 @@ class LogicTest {
         val v2 = """{"version":2,"template":[{"id":"used","name":"Что использовалось","type":"MULTI"},{"id":"why","name":"Заметка","type":"TEXT"}],"entries":{}}"""
         File(ctx.filesDir, "data.json").writeText(v2)
         val r = Repo(ctx)
-        assertEquals(listOf("used", "water", "why", "wb"), r.template.value.map { it.id })
+        assertEquals(listOf("tips", "goal", "rhythm", "training", "used", "water", "why", "wb"), r.template.value.map { it.id })
         assertEquals(2.0, r.template.value.first { it.id == "water" }.max, 0.0)
         println("SOURCES_WATER_OK")
     }
@@ -104,9 +104,13 @@ class LogicTest {
     }
 
     @Test fun iconSwitch() {
-        assertEquals("diary", AppIcons.current(ctx))
-        AppIcons.set(ctx, "woman")
-        assertEquals("woman", AppIcons.current(ctx))
+        assertEquals("brain", AppIcons.current(ctx))
+        AppIcons.set(ctx, "s23")
+        assertEquals("s23", AppIcons.current(ctx))
+        assertEquals(30, AppIcons.all.size)
+        // значок прошлой версии («Мопс») при запуске переключается на «Корги»
+        AppIcons.set(ctx, "diary"); AppIcons.normalize(ctx)
+        assertEquals("s23", AppIcons.current(ctx))
         println("ICON_OK")
     }
 

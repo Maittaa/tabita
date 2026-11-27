@@ -93,23 +93,47 @@ fun VerticalScrollbar(state: ScrollState, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Полоса для LazyColumn (5.20): положение и размер считаются в пикселях. Высоты карточек запоминаются,
+ * пока они видны; для ещё не показанных берётся средняя. Раньше считалось по числу видимых карточек —
+ * при смене высоких карточек на низкие ползунок «дёргался» и менял размер.
+ */
 @Composable
 fun LazyScrollbar(state: LazyListState, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
+    val sizes = remember(state) { HashMap<Int, Int>() }
     val info = state.layoutInfo
     val total = info.totalItemsCount
     if (total == 0) return
     val visible = info.visibleItemsInfo
     val first = visible.firstOrNull() ?: return
-    val share = (visible.size.toFloat() / total).coerceIn(0.05f, 1f)
-    val firstFrac = if (first.size > 0) -first.offset.toFloat() / first.size else 0f
-    val scrollable = (total - visible.size).coerceAtLeast(1)
-    val fraction = ((state.firstVisibleItemIndex + firstFrac) / scrollable).coerceIn(0f, 1f)
+    // число элементов поменялось (фильтр, другой период) — старые высоты могут не подходить
+    if (sizes.keys.any { it >= total }) sizes.clear()
+    visible.forEach { sizes[it.index] = it.size }
+    val gap = info.mainAxisItemSpacing
+    val avg = sizes.values.average().toFloat()
+    fun sizeOf(i: Int) = (sizes[i]?.toFloat() ?: avg) + gap
+    val content = (0 until total).sumOf { sizeOf(it).toDouble() }.toFloat() - gap + info.beforeContentPadding + info.afterContentPadding
+    val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+    val maxScroll = (content - viewport).coerceAtLeast(1f)
+    val pos = (0 until first.index).sumOf { sizeOf(it).toDouble() }.toFloat() - first.offset
+    val fraction = when {
+        !state.canScrollBackward -> 0f
+        !state.canScrollForward -> 1f
+        else -> (pos / maxScroll).coerceIn(0f, 1f)
+    }
     Box(modifier.fillMaxHeight()) {
         ScrollbarCore(
-            fraction = if (!state.canScrollForward) 1f else fraction, visibleShare = if (!state.canScrollForward && !state.canScrollBackward) 1f else share,
+            fraction = fraction,
+            visibleShare = if (!state.canScrollForward && !state.canScrollBackward) 1f else (viewport / content).coerceIn(0.05f, 1f),
             scrolling = state.isScrollInProgress,
-            onSeek = { f -> scope.launch { state.scrollToItem((f * (total - 1)).toInt()) } },
+            onSeek = { f ->
+                // доля → пиксель → элемент и смещение внутри него
+                var rest = f * maxScroll
+                var i = 0
+                while (i < total - 1 && rest >= sizeOf(i)) { rest -= sizeOf(i); i++ }
+                scope.launch { state.scrollToItem(i, rest.toInt()) }
+            },
             modifier = Modifier.align(Alignment.TopEnd),
         )
     }

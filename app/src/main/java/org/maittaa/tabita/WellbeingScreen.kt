@@ -96,6 +96,11 @@ fun WellbeingScreen(act: MainActivity, modifier: Modifier) {
     }
     val saveDraft: (WDraft?) -> Unit = { d -> draft = d; prefs.wbDraft = d?.toJson() }
 
+    // 5.52: у выбора блоков, чекапа и подробностей свой заголовок с «назад» — панель раздела не дублируем
+    androidx.compose.runtime.DisposableEffect(view) {
+        act.train.ownBar = view != WView.Home
+        onDispose { act.train.ownBar = false }
+    }
     Box(modifier.fillMaxSize()) {
         when (val v = view) {
             WView.Home -> WHome(
@@ -143,7 +148,7 @@ private fun WHome(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item("head") {
             Column(Modifier.padding(horizontal = 4.dp)) {
-                Text(t("Самочувствие"), style = MaterialTheme.typography.headlineSmall)
+                // 5.52: заголовок «Самочувствие» — в верхней панели раздела
                 Text(t("Короткие проверенные опросники. Это скрининг, а не диагноз; правильных ответов нет."),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -183,7 +188,7 @@ private fun WHome(
             }
         }
         item("period") {
-            Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            androidx.compose.foundation.layout.FlowRow(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(t("Повторять каждые"), style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
                 listOf(7, 14, 30).forEach { d -> FilterChip(selected = period == d, onClick = { onPeriod(d) }, label = { Text(t("%d дн.", d)) }) }
             }
@@ -450,7 +455,12 @@ private fun WChart(b: WBlock, list: List<Checkup>) {
     val style = TextStyle(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     val bandColors = b.bands.map { levelColor(it.level).copy(alpha = 0.10f) }
     val vals = list.map { it.results[b.id]!!.score }
-    Canvas(Modifier.fillMaxWidth().height(160.dp)) {
+    val touch = remember(list, b) { mutableStateOf<Float?>(null) }
+    val tipStyle = TextStyle(fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+    val tipBg = MaterialTheme.colorScheme.surfaceContainerHighest
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    val lbl = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.fillMaxWidth().height(160.dp).chartScrub(touch)) {
         val l = 28.dp.toPx(); val bot = 16.dp.toPx(); val top = 4.dp.toPx()
         val w = size.width - l; val h = size.height - bot - top
         fun y(v: Double) = top + h - (v / b.max * h).toFloat()
@@ -469,6 +479,11 @@ private fun WChart(b: WBlock, list: List<Checkup>) {
         listOf(0, n - 1).distinct().forEach { i ->
             val tl = measurer.measure(LocalDate.parse(list[i].date).ruShort(), style)
             drawText(tl, topLeft = Offset((x(i) - tl.size.width / 2).coerceIn(l, size.width - tl.size.width), size.height - tl.size.height))
+        }
+        touch.value?.let { tx ->
+            val i = nearestIndex(tx, vals.indices.map { x(it) }) ?: return@let
+            drawScrub(x(i), top, top + h, listOf(y(vals[i]) to line),
+                listOf(LocalDate.parse(list[i].date).ruShort(), b.format(vals[i]) + " · " + b.band(vals[i]).name.s), measurer, tipStyle, lbl, tipBg, grid, l)
         }
     }
 }

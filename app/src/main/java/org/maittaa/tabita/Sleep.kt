@@ -107,6 +107,19 @@ object Sleep {
      * Сессии одного источника за ночь → (минуты сна, подробности).
      * Минуты сна = время в сессиях минус бодрствование (как раньше); фазы — от начала первой сессии.
      */
+    /**
+     * Дневной/вечерний сон (5.25): начался после 11:00 и закончился в тот же день. Такой сон — отдельная строка дня
+     * («дневной сон»), а не основной сон: не складывается с ночным и не сдвигает средние подъёма и отбоя.
+     * Ночной сон по-прежнему записывается в день пробуждения.
+     */
+    fun isNap(start: Long, end: Long, zone: java.time.ZoneId): Boolean {
+        val s = java.time.Instant.ofEpochMilli(start).atZone(zone); val e = java.time.Instant.ofEpochMilli(end).atZone(zone)
+        return s.toLocalDate() == e.toLocalDate() && s.hour >= 11
+    }
+    fun napKey(id: String) = "$id!nap"
+    fun napTimeKey(id: String) = "$id!napt"
+    fun hhmm(ms: Long, zone: java.time.ZoneId) = java.time.Instant.ofEpochMilli(ms).atZone(zone).let { "%d:%02d".format(it.hour, it.minute) }
+
     fun combine(sessions: List<RawSession>): Pair<Long, SleepDetail> {
         val s0 = sessions.minOf { it.start }; val e0 = sessions.maxOf { it.end }
         var minutes = 0L
@@ -226,6 +239,11 @@ fun SleepBlock(
                 Button(onClick = { Log.i("Sleep", "ручная правка: $value → $draft"); onManual(draft); editing = false }) { Text(t("Сохранить")) }
             }
             return@SectionCard
+        }
+        parseNumber(day[Sleep.napKey(item.id)])?.takeIf { it > 0 }?.let { nap ->
+            Text(t("Дневной сон: %s", formatMinutes(nap)) + (day[Sleep.napTimeKey(item.id)]?.let { " ($it)" } ?: "") +
+                " · " + t("не входит в ночной"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp))
         }
         if (min == null) {
             Text(t("Сон за эту ночь не записан"), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -427,14 +445,14 @@ fun SleepFull(c: SleepCard, ctx: Ctx) {
     val key = c.key + "_" + cur.id
     val def = if (cur.id == "score" || cur.id == "dur") ChartType.BARS else ChartType.LINE
     SectionCard(c.title, watch = true, action = { if (cur.id != "stages") ChartTypeMenu(key, def, ctx) }) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             c.metrics.forEach { m ->
                 androidx.compose.material3.FilterChip(selected = m.id == cur.id, onClick = { sel = m.id; ctx.prefs.sleepSelected = m.id },
                     label = { Text(m.title) })
             }
         }
         val p = cur.values.filterNotNull()
-        Row(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(Modifier.padding(top = 6.dp).hScroll(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (p.isNotEmpty()) {
                 Stat(t("среднее"), cur.fmt(p.average()))
                 Stat(t("мин."), cur.fmt(p.min())); Stat(t("макс."), cur.fmt(p.max()))

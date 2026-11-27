@@ -6,7 +6,17 @@
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
     <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
+    <!-- тренировки: запись тренировок в Health Connect, таймер отдыха в уведомлении -->
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 5.26: «Поставить будильник» в «Ритме дня» — открывает приложение часов -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -55,8 +65,8 @@
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:icon="@mipmap/ic_dog"
-        android:roundIcon="@mipmap/ic_dog"
+        android:icon="@mipmap/ic_brain"
+        android:roundIcon="@mipmap/ic_brain"
         android:label="@string/app_name"
         android:theme="@style/Theme.Tabita">
 
@@ -69,13 +79,418 @@
             </intent-filter>
         </activity>
 
-        <!-- вариант значка (имена алиасов сохранены от прошлых версий, чтобы значок не пропадал) -->
+        <!-- 5.18.2: основной значок — «Мозг» -->
+        <activity-alias
+            android:name=".IconBrain"
+            android:exported="true"
+            android:enabled="true"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- 5.34: значки-стикеры на выбор (прежние «Мопс», «Девушка», «Протеин», «Скелет» убраны, их алиасы ведут на основной) -->
+        <activity-alias
+            android:name=".IconS00"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s00"
+            android:roundIcon="@mipmap/ic_s00"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS01"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s01"
+            android:roundIcon="@mipmap/ic_s01"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS02"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s02"
+            android:roundIcon="@mipmap/ic_s02"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS03"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s03"
+            android:roundIcon="@mipmap/ic_s03"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS04"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s04"
+            android:roundIcon="@mipmap/ic_s04"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS05"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s05"
+            android:roundIcon="@mipmap/ic_s05"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS10"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s10"
+            android:roundIcon="@mipmap/ic_s10"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS11"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s11"
+            android:roundIcon="@mipmap/ic_s11"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS12"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s12"
+            android:roundIcon="@mipmap/ic_s12"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS13"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s13"
+            android:roundIcon="@mipmap/ic_s13"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS14"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s14"
+            android:roundIcon="@mipmap/ic_s14"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS15"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s15"
+            android:roundIcon="@mipmap/ic_s15"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS20"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s20"
+            android:roundIcon="@mipmap/ic_s20"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS21"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s11"
+            android:roundIcon="@mipmap/ic_s11"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS22"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s22"
+            android:roundIcon="@mipmap/ic_s22"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS23"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s23"
+            android:roundIcon="@mipmap/ic_s23"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS24"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s24"
+            android:roundIcon="@mipmap/ic_s24"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS25"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s25"
+            android:roundIcon="@mipmap/ic_s25"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS30"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s30"
+            android:roundIcon="@mipmap/ic_s30"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS31"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s31"
+            android:roundIcon="@mipmap/ic_s31"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS32"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s32"
+            android:roundIcon="@mipmap/ic_s32"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS33"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s33"
+            android:roundIcon="@mipmap/ic_s33"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS34"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s34"
+            android:roundIcon="@mipmap/ic_s34"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS35"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s35"
+            android:roundIcon="@mipmap/ic_s35"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS40"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s40"
+            android:roundIcon="@mipmap/ic_s40"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS41"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s41"
+            android:roundIcon="@mipmap/ic_s41"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS42"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s42"
+            android:roundIcon="@mipmap/ic_s42"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS43"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s43"
+            android:roundIcon="@mipmap/ic_s43"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS44"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s44"
+            android:roundIcon="@mipmap/ic_s44"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".IconS45"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_s45"
+            android:roundIcon="@mipmap/ic_s45"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- «Мопс» (до 5.18.2 — основной; теперь на выбор). Имена алиасов сохранены от прошлых версий -->
         <activity-alias
             android:name=".IconDiary"
             android:exported="true"
-            android:enabled="true"
-            android:icon="@mipmap/ic_dog"
-            android:roundIcon="@mipmap/ic_dog"
+            android:enabled="false"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -88,8 +503,8 @@
             android:name=".IconMan"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_dog"
-            android:roundIcon="@mipmap/ic_dog"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -102,8 +517,8 @@
             android:name=".IconWoman"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_girl"
-            android:roundIcon="@mipmap/ic_girl"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -116,8 +531,8 @@
             android:name=".IconZen"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_protein"
-            android:roundIcon="@mipmap/ic_protein"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -125,13 +540,13 @@
             </intent-filter>
         </activity-alias>
 
-        <!-- вариант значка (5.9) -->
+        <!-- бывший значок «Яйцо» (5.9; с 5.18.1 — значок приложения Tops), алиас сохранён: при запуске переключается на «Мопса» -->
         <activity-alias
             android:name=".IconEgg"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_egg"
-            android:roundIcon="@mipmap/ic_egg"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -144,8 +559,8 @@
             android:name=".IconSkull"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_skull"
-            android:roundIcon="@mipmap/ic_skull"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -158,8 +573,8 @@
             android:name=".IconPeak"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_protein"
-            android:roundIcon="@mipmap/ic_protein"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -172,8 +587,8 @@
             android:name=".IconChisel"
             android:exported="true"
             android:enabled="false"
-            android:icon="@mipmap/ic_dog"
-            android:roundIcon="@mipmap/ic_dog"
+            android:icon="@mipmap/ic_brain"
+            android:roundIcon="@mipmap/ic_brain"
             android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -199,6 +614,15 @@
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".train.TimerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Таймер отдыха между подходами" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

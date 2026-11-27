@@ -17,7 +17,14 @@ enum class ItemType(val ru: String) {
     EXPENSES("Финансы (покупки)"),
     BODY("Весы openScale (все показатели)"),
     WATER("Вода (норма, ползунок)"),
-    WELLBEING("Чекап самочувствия (тесты)");
+    WELLBEING("Чекап самочувствия (тесты)"),
+    /** Советы дня (5.20): плитка с подсказками по питанию, воде, шагам, тренировкам и сну. Значений не хранит. */
+    TIPS("Советы дня"),
+    /** Тренировка (5.24): решение на сегодня по дневнику, план и советы по восстановлению. Значений не хранит. */
+    TRAINING("Тренировка (план и советы)"),
+    /** Цель (5.31): цель из «Программы» и что осталось на сегодня. Значений не хранит. */
+    GOAL("Цель (программа)"),
+    RHYTHM("Ритм дня");
 
     val title get() = t(ru)
 }
@@ -27,7 +34,7 @@ enum class GroupKind(val ru: String, val types: List<ItemType>) {
     CHECKS("Отметки", listOf(ItemType.CHECK)),
     VALUES("Числа и оценки", listOf(ItemType.SCALE, ItemType.NUMBER, ItemType.DURATION)),
     LISTS("Списки вариантов", listOf(ItemType.MULTI)),
-    BLOCKS("Блоки", listOf(ItemType.WATER, ItemType.MEALS, ItemType.EXPENSES, ItemType.BODY, ItemType.TEXT, ItemType.WELLBEING));
+    BLOCKS("Блоки", listOf(ItemType.WATER, ItemType.MEALS, ItemType.EXPENSES, ItemType.BODY, ItemType.TEXT, ItemType.WELLBEING, ItemType.TIPS, ItemType.TRAINING, ItemType.GOAL, ItemType.RHYTHM));
 
     val title get() = t(ru)
 
@@ -99,6 +106,12 @@ data class TemplateItem(
     val counter: Boolean = true,
     /** Группа (id из [Group]); пусто — группа по умолчанию для вида пункта. */
     val group: String = "",
+    /** 5.59.1: раздел внутри плитки отметок («Самочувствие», «Привычки»…); пусто — без раздела. */
+    val section: String = "",
+    /** 5.59.2: влияние отметки на совет на тренировку: "" — нет, "easy" — легче, "rest" — отдых. */
+    val train: String = "",
+    /** 5.61: настройки вариантов списка: раздел и «каждый день» (по названию варианта). */
+    val optMeta: Map<String, OptMeta> = emptyMap(),
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("name", name); put("type", type.name)
@@ -106,6 +119,11 @@ data class TemplateItem(
         put("unit", unit); put("min", min); put("max", max)
         put("source", source.name); put("hidden", hidden); put("counter", counter)
         if (group.isNotEmpty()) put("group", group)
+        if (section.isNotEmpty()) put("sec", section)
+        if (train.isNotEmpty()) put("trn", train)
+        optMeta.filterKeys { it in options }.filterValues { !it.isEmpty }.takeIf { it.isNotEmpty() }?.let { m ->
+            put("om", JSONObject().apply { m.forEach { (k, v) -> put(k, v.toJson()) } })
+        }
     }
 
     /** Пункт можно усреднять и рисовать линейным графиком. */
@@ -134,6 +152,9 @@ data class TemplateItem(
                 hidden = o.optBoolean("hidden"),
                 counter = o.optBoolean("counter", true),
                 group = o.optString("group"),
+                section = o.optString("sec"),
+                train = o.optString("trn"),
+                optMeta = o.optJSONObject("om")?.let { om -> om.keys().asSequence().associateWith { k -> OptMeta.fromJson(om.getJSONObject(k)) } } ?: emptyMap(),
             )
         }
     }
@@ -166,6 +187,19 @@ const val MULTI_SEP = "\u001F"
 const val COUNT_SEP = "\u001E"
 
 /** Список с количеством: "Кофе␞2␟Чай" → {Кофе=2, Чай=1}. Старые значения без количества = 1. */
+/** 5.61: вариант списка — раздел в плитке и «каждый день» (добавки, витамины: видно, что ещё не отмечено). */
+data class OptMeta(val section: String = "", val daily: Boolean = false) {
+    val isEmpty get() = section.isBlank() && !daily
+    fun toJson(): JSONObject = JSONObject().apply { if (section.isNotBlank()) put("s", section); if (daily) put("d", true) }
+    companion object { fun fromJson(o: JSONObject) = OptMeta(o.optString("s"), o.optBoolean("d")) }
+}
+
+/** Варианты «каждый день», которые в день [v] ещё не отмечены. */
+fun TemplateItem.dailyMissing(v: String?): List<String> {
+    val c = parseCounts(v)
+    return options.filter { optMeta[it]?.daily == true && (c[it] ?: 0) == 0 }
+}
+
 fun parseCounts(v: String?): LinkedHashMap<String, Int> {
     val m = LinkedHashMap<String, Int>()
     v?.split(MULTI_SEP)?.filter { it.isNotEmpty() }?.forEach { part ->
@@ -182,6 +216,18 @@ fun countsToString(m: Map<String, Int>): String? =
 /** Вода: норма в литрах хранится в [TemplateItem.max]. */
 fun waterTemplateItem() = TemplateItem(id = "water", name = "Вода", type = ItemType.WATER, min = 0.0, max = 2.0, unit = "л")
 
+fun tipsTemplateItem() = TemplateItem(id = "tips", name = "Советы дня", type = ItemType.TIPS)
+
+fun trainingTemplateItem() = TemplateItem(id = "training", name = "Тренировка", type = ItemType.TRAINING)
+
+fun goalTemplateItem() = TemplateItem(id = "goal", name = "Цель", type = ItemType.GOAL)
+
+/** 5.43: «Ритм дня» отдельной плиткой. */
+fun rhythmTemplateItem() = TemplateItem(id = "rhythm", name = "Ритм дня", type = ItemType.RHYTHM)
+
+/** Плитки-«одиночки»: в шаблоне не больше одной, id фиксирован. */
+val singletonTypes = mapOf(ItemType.WELLBEING to "wb", ItemType.TIPS to "tips", ItemType.TRAINING to "training", ItemType.GOAL to "goal", ItemType.RHYTHM to "rhythm")
+
 fun wellbeingTemplateItem() = TemplateItem(id = "wb", name = "Чекап самочувствия", type = ItemType.WELLBEING)
 
 fun bodyTemplateItem() = TemplateItem(id = "body", name = "Весы", type = ItemType.BODY, source = Source.OPENSCALE)
@@ -192,6 +238,10 @@ fun srcKey(id: String) = "$id!src"
 val expenseCategoriesRu = listOf("Продукты", "Кафе", "Транспорт", "Дом", "Здоровье", "Одежда", "Развлечения", "Другое")
 
 fun defaultTemplate(): List<TemplateItem> = listOf(
+    tipsTemplateItem(),
+    goalTemplateItem(),
+    rhythmTemplateItem(),
+    trainingTemplateItem(),
     TemplateItem(id = "sleep", name = "Сон", type = ItemType.DURATION, source = Source.HC_SLEEP),
     TemplateItem(id = "rate", name = "Оценка дня", type = ItemType.SCALE, min = 1.0, max = 10.0),
     TemplateItem(id = "work", name = "Work", type = ItemType.CHECK, plusAllowed = true),
@@ -236,6 +286,8 @@ data class Meal(
     val gl: Double? = null,
     /** Сцепка: карточки с одинаковым link — один приём пищи (позиции открываются по отдельности). */
     val link: String = "",
+    /** 5.45: когда ели (мс) — время съёмки фото блюда; null — неизвестно. */
+    val at: Long? = null,
 ) {
     /** Ключ приёма: у сцепленных карточек общий. */
     val unit: String get() = link.ifEmpty { id }
@@ -248,6 +300,7 @@ data class Meal(
         if (hint.isNotBlank()) put("hint", hint)
         gi?.let { put("gi", it) }; gl?.let { put("gl", it) }
         if (link.isNotEmpty()) put("link", link)
+        at?.let { put("at", it) }
         kcal?.let { put("kcal", it) }; protein?.let { put("p", it) }
         fat?.let { put("f", it) }; carbs?.let { put("c", it) }
     }
@@ -262,6 +315,7 @@ data class Meal(
             hint = o.optString("hint"),
             gi = o.optNum("gi"), gl = o.optNum("gl"),
             link = o.optString("link"),
+            at = if (o.has("at")) o.optLong("at") else null,
         )
     }
 }

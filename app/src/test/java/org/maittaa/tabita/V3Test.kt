@@ -30,7 +30,7 @@ class FakeOpenScale : ContentProvider() {
                 {"identity":"os:bmi","name":"ИМТ","unit":"kg/m2","inputType":"FLOAT","isDerived":true,"value":29.1},
                 {"identity":"os:comment","name":"Комментарий","unit":"","inputType":"TEXT","text":"утро"}]""" }
             addRow(arrayOf(1, ms(LocalDateTime.of(2026, 11, 10, 7, 30)), j(95.2, 24.0)))
-            addRow(arrayOf(2, ms(LocalDateTime.of(2026, 11, 10, 21, 0)), j(95.9, 24.3))) // позже в тот же день — берём его
+            addRow(arrayOf(2, ms(LocalDateTime.of(2026, 11, 10, 21, 0)), j(95.9, 24.3))) // вечером — 5.25: берём утреннее
             addRow(arrayOf(3, ms(LocalDateTime.of(2026, 11, 11, 7, 10)), j(94.8, 23.9)))
         }
         else -> null
@@ -61,7 +61,7 @@ class V3Test {
         val days = os.readDays("com.health.openscale", 1)
         assertEquals(2, days.size)
         val d10 = days[java.time.LocalDate.of(2026, 11, 10)]!!
-        assertEquals(95.9, d10.metrics.first { it.id == "os:weight" }.value, 0.001)
+        assertEquals(95.2, d10.metrics.first { it.id == "os:weight" }.value, 0.001)
         assertEquals(listOf("Вес", "Жир", "ИМТ"), d10.metrics.map { it.name })
         // в дневник: блок «Весы» добавляется, отдельный «Вес» скрывается
         val repo = Repo(ctx)

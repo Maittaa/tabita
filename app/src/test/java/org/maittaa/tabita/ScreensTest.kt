@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
@@ -60,6 +61,12 @@ class ScreensTest {
         android.graphics.Canvas(b).apply { drawColor(android.graphics.Color.rgb(90, 90, 90)); v.draw(this) }
         val out = File(System.getProperty("user.dir"), "../shots").apply { mkdirs() }
         File(out, "$name.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /** Нажать вкладку (нижнюю или раздел «Программы») по подписи. */
+    private fun tab(name: String) {
+        rule.onAllNodes(androidx.compose.ui.test.hasText(name) and androidx.compose.ui.test.SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.Tab))[0].performClick()
     }
 
     private fun scrollTo(text: String, scroll: Boolean = true) {
@@ -180,8 +187,8 @@ class ScreensTest {
             rule.onAllNodesWithText("Отмена")[0].performClick()
             rule.onNodeWithText("Как замерить пульс покоя без часов").performScrollTo().performClick(); shot("1h_rhr_hint")
             rule.onNodeWithText("Из чего оценка").performScrollTo(); shot("1s_day_sleep")
-            rule.onNodeWithText("Как рассчитать норму?").performScrollTo().performClick()
-            rule.onNodeWithText("Сделать нормой", substring = true).performScrollTo(); shot("1w_water")
+            rule.onNodeWithText("Из чего норма").performScrollTo().performClick()
+            rule.onNodeWithText("Итого на день", substring = true).performScrollTo(); shot("1w_water")
             rule.onNodeWithText("Весы").performScrollTo(); shot("1a_day_body")
             it.onActivity { a -> a.prefs.lang = "en"; I18n.lang = "en" }; shot("1a_day_body_en")
             it.onActivity { a -> a.prefs.lang = "ru"; I18n.lang = "ru" }
@@ -190,8 +197,18 @@ class ScreensTest {
             rule.onNodeWithText("Расцепить").performScrollTo(); shotTop("1m_linked_card")
             rule.onAllNodesWithText("Готово").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()
             rule.onNodeWithText("Гликемическая оценка", substring = true).performScrollTo(); shot("1g_day_food_gly")
+            // 5.19.3: нормы БЖУ при заполненном профиле
+            it.onActivity { a -> a.repo.setProfile(Profile(183.0, 1996, "m")) }
+            rule.onNodeWithText("Гликемическая оценка", substring = true).performScrollTo(); shot("12c_day_macros_norms")
+            rule.onNodeWithText("БЖУ за день", substring = true).performClick(); shotTop("12d_macros_detail")
+            rule.onNodeWithText("Закрыть").performClick()
             rule.onNodeWithText("Финансы").performScrollTo(); shot("1b_day_food_money")
             rule.onNodeWithText("Гречка, котлета, салат").performScrollTo().performClick(); shotTop("1c_meal_dialog")
+            // 5.27: справочник — сортировка по полезности, свой продукт
+            rule.onNodeWithContentDescription("Справочник продуктов").performScrollTo().performClick()
+            rule.onNodeWithText("полезные").performClick(); shotTop("13a_ref_score")
+            rule.onAllNodesWithText("Куриная грудка", substring = true)[0].performScrollTo().performClick(); shotTop("13b_ref_details")
+            rule.onAllNodesWithContentDescription("Закрыть").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()
             rule.onNodeWithText("Готово").performClick()
             // плитки: часть уменьшена
             it.onActivity { a -> a.repo.setLayout(listOf(
@@ -211,8 +228,8 @@ class ScreensTest {
             shot("8_dark_edit")
             rule.onAllNodesWithText("Готово").let { n ->
                 val i = n.fetchSemanticsNodes().withIndex().minBy { it.value.boundsInRoot.top }.index; n[i].performClick() }; shot("8b_dark_tiles")
-            rule.onNodeWithText("Графики").performClick(); shot("8c_dark_stats")
-            rule.onNodeWithText("День").performClick()
+            tab("Программа"); tab("Графики"); shot("8c_dark_stats")
+            tab("Сегодня")
             it.onActivity { a -> Look.accent = "dynamic" }; shot("8d_dark_dynamic")
             it.onActivity { a -> Look.mode = "light"; Look.accent = "green" }
             rule.onNodeWithText("Плитки").performScrollTo().performClick()
@@ -229,24 +246,24 @@ class ScreensTest {
             rule.onNodeWithText("Отмена").performClick()
             rule.onNodeWithText("Привычки").performScrollTo(); shotTop("3b_all_items_groups")
             rule.onNodeWithContentDescription("Закрыть").performClick()
-            rule.onNodeWithText("Графики").performClick()
+            tab("Программа"); tab("Графики")
             scrollTo("Весы"); shot("2a_stats_body")
             scrollTo("норма выполнена"); shot("2w_stats_water")
             scrollTo("Траты по категориям"); shot("2f_stats_donut")
             rule.onNodeWithText("Нажмите на категорию", substring = true).performScrollTo()
-            rule.onAllNodesWithText("Продукты")[0].performClick(); shotTop("2h_category")
+            rule.onAllNodesWithText("Продукты")[0].performScrollTo().performClick(); shotTop("2h_category")
             rule.onNodeWithText("Закрыть").performClick()
             scrollTo("Доходы и расходы по неделям"); shot("2g_stats_flow")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToIndex(0)
-            rule.onNodeWithContentDescription("2 в ряд").performClick(); shot("2b_stats_grid2")
-            rule.onNodeWithContentDescription("3 в ряд").performClick(); shot("2c_stats_grid3")
+            rule.onNodeWithContentDescription("1 в ряд").performClick(); shot("2b_stats_grid2")
+            rule.onNodeWithContentDescription("2 в ряд").performClick(); shot("2c_stats_grid3")
             rule.onNodeWithText("Весы").performClick(); shotTop("2d_popup_body")
             rule.onNodeWithContentDescription("Закрыть").performClick()
             rule.onNodeWithText("Все графики").performClick(); shotTop("2e_filter")
             rule.onNodeWithText("Готово").performClick()
-            rule.onNodeWithContentDescription("1 в ряд").performClick()
+            rule.onNodeWithContentDescription("3 в ряд").performClick()
             // итоги месяца
-            rule.onNodeWithText("Итоги месяца").performClick(); shot("9a_month_now")
+            tab("Итоги"); shot("9a_month_now")
             rule.onNodeWithContentDescription("Назад").performClick(); shot("9b_month_prev")
             scrollTo("Лучшая серия"); shot("9c_month_index")
             scrollTo("Цели: дни и % выполнения"); shot("9d_month_goals")
@@ -255,7 +272,7 @@ class ScreensTest {
             rule.onAllNodesWithText("Снять все")[1].performClick(); rule.onNodeWithText("Готово").performClick(); shot("9j_heat_filtered")
             rule.onNodeWithText("Каждый день месяца").performTouchInput { click(androidx.compose.ui.geometry.Offset(centerX + 60f, centerY + 120f)) }
             shot("9h_jump_to_day")
-            rule.onNodeWithText("Графики").performClick()
+            tab("Программа"); tab("Итоги")
             scrollTo("Лучшая серия")
             rule.onNodeWithContentDescription("Настроить индекс").performClick(); shotTop("9e_index_setup")
             rule.onNodeWithText("Готово").performClick()
@@ -263,12 +280,12 @@ class ScreensTest {
             it.onActivity { a -> a.prefs.lang = "ru"; I18n.lang = "ru" }
             it.onActivity { a -> Look.mode = "dark" }; rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToIndex(0); shot("9g_month_dark")
             it.onActivity { a -> Look.mode = "light" }
-            rule.onNodeWithText("Динамика").performClick()
+            tab("Графики")
             // самочувствие: плитка в дне «пора», вкладка, выбор блоков, прохождение, итог, подробно
-            rule.onNodeWithText("День").performClick()
+            tab("Сегодня")
             rule.onAllNodesWithText("Чекап самочувствия")[0].performScrollTo()
             shot("10a_day_wb_due")
-            rule.onNodeWithText("Самочувствие").performClick(); shot("10b_wb_home")
+            tab("Здоровье"); rule.onNode(androidx.compose.ui.test.hasTestTag("hub_wb")).performClick(); rule.waitForIdle(); shot("10b_wb_home")
             rule.onNodeWithText("Начать").performClick(); shot("10c_wb_select")
             rule.onNodeWithText("Стресс").performClick(); rule.onNodeWithText("Стресс").performClick()
             rule.onAllNodesWithText("Начать")[0].performClick(); shot("10d_wb_quiz")
@@ -282,11 +299,11 @@ class ScreensTest {
             rule.onNodeWithText("К результатам").performClick(); shot("10g_wb_results")
             rule.onAllNodesWithText("Тревога")[0].performClick(); shot("10h_wb_detail")
             rule.onNodeWithContentDescription("Назад").performClick()
-            rule.onNodeWithText("День").performClick()
+            tab("Сегодня")
             rule.onAllNodesWithText("Чекап самочувствия")[0].performScrollTo()
             shot("10i_day_wb_done")
             // графики: карточка «Самочувствие» и порядок карточек
-            rule.onNodeWithText("Графики").performClick()
+            tab("Программа"); tab("Графики")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Изменение — с прошлого прохождения. Это скрининг, а не диагноз."))
             shot("10j_stats_wellbeing")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToIndex(0)
@@ -294,20 +311,43 @@ class ScreensTest {
             rule.onAllNodesWithContentDescription("Выше")[3].performClick()
             shotTop("10k_stats_order")
             rule.onNodeWithText("Готово").performClick()
-            rule.onNodeWithText("Ещё").performClick(); shot("5_settings")
+            // 5.28: план
+            it.onActivity { a -> a.prefs.planGoal = "" }
+            tab("Программа"); tab("Цель"); shot("14a_plan")
+            rule.onNodeWithText("Набор мышц").performScrollTo().performClick(); shot("14b_plan_muscle")
+            rule.onNodeWithText("Сменить цель").performClick()
+            rule.onNodeWithText("Похудение").performScrollTo().performClick(); rule.onNodeWithText("Сменить").performClick(); shot("14c_plan_lose")
+            rule.onNodeWithText("Распорядок и меню").performScrollTo().performClick(); shot("14e_plan_menu")
+            rule.onNodeWithText("Распорядок и меню").performClick()
+            rule.onNodeWithText("Белок на похудении").performScrollTo().performClick(); shot("14f_plan_protein")
+            tab("Ещё"); shot("5_settings")
             rule.onNodeWithText("Оформление").performClick(); shotTop("5c_icons")
             rule.onNodeWithContentDescription("Закрыть").performClick()
             rule.onNodeWithText("Часы и весы (Health Connect)").performClick(); shotTop("5b_settings_hc")
             rule.onNodeWithContentDescription("Закрыть").performClick()
-            rule.onNodeWithText("Данные: экспорт и копия").performClick()
+            rule.onNodeWithText("Дневник: экспорт и копия").performScrollTo().performClick()
             rule.onNodeWithText("Удалить все данные").performScrollTo(); shotTop("5e_data")
             rule.onNodeWithText("Удалить все данные").performClick(); shotTop("5f_wipe")
             rule.onNodeWithText("Отмена").performClick()
             rule.onNodeWithContentDescription("Закрыть").performClick()
-            rule.onNodeWithText("О приложении").performClick(); shotTop("5d_about")
+            rule.onNodeWithText("О приложении").performScrollTo().performClick(); shotTop("5d_about")
             rule.onNodeWithContentDescription("Закрыть").performClick()
+            // 5.19: профиль и карточки по росту
+            it.onActivity { a -> a.repo.setProfile(Profile(183.0, 1996, "m")) }
+            rule.onNodeWithText("Профиль: рост и возраст").performClick(); shotTop("5g_profile")
+            rule.onNodeWithContentDescription("Закрыть").performClick()
+            tab("Программа"); tab("Графики")
+            rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Тело и рост"))
+            shot("12a_stats_anthro")
+            rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Энергобаланс: съедено − расход"))
+            shot("12b_stats_energy")
+            rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Питание: БЖУ"))
+            shot("12e_stats_macros")
+            rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToIndex(0)
+            tab("Ещё")
+            tab("Ещё")
             // сон: блок дня и карточка графиков
-            rule.onNodeWithText("Графики").performClick()
+            tab("Программа"); tab("Графики")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Гликемическая оценка"))
             shot("11c_stats_gly")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToNode(androidx.compose.ui.test.hasText("Индекс дня"))
@@ -321,9 +361,9 @@ class ScreensTest {
             shot("11a_stats_sleep")
             rule.onNodeWithText("Фазы").performScrollTo().performClick(); shot("11b_stats_sleep_stages")
             rule.onNode(androidx.compose.ui.test.hasScrollToIndexAction()).performScrollToIndex(0)
-            rule.onNodeWithText("День").performClick()
+            tab("Сегодня")
             it.onActivity { a -> a.prefs.lang = "en"; I18n.lang = "en" }
-            rule.onNodeWithText("Day").performClick(); shot("6_day_en")
+            tab("Today"); shot("6_day_en")
             it.onActivity { a -> a.prefs.setPin("1234"); a.prefs.lockEnabled = true; a.locked = true }
             shot("7_lock")
             it.onActivity { a -> a.prefs.lang = "ru"; I18n.lang = "ru"; a.prefs.lockEnabled = false; a.locked = false }

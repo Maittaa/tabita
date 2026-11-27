@@ -19,6 +19,7 @@ class Repo(context: Context) {
     /** Засчитывать ходьбу в тренировки — из настроек. */
     var countWalking: () -> Boolean = { Prefs(context).countWalking }
     private val file = File(context.filesDir, "data.json")
+    private val appCtx = context.applicationContext
     /** Фото блюд хранятся отдельными файлами. */
     val photosDir = File(context.filesDir, "photos").apply { mkdirs() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -52,6 +53,28 @@ class Repo(context: Context) {
         scheduleSave()
     }
 
+    /** Профиль: рост, год рождения, пол (5.19). Не стирается «Удалить все данные» — это настройка. */
+    private val _profile = MutableStateFlow(Profile())
+    val profile: StateFlow<Profile> = _profile
+
+    fun setProfile(p: Profile) {
+        _profile.value = p
+        Log.i("Repo", "профиль: рост ${p.heightCm}, год ${p.birthYear}, пол ${p.sex}")
+        scheduleSave()
+    }
+
+    /** Свои продукты справочника (5.22.2): по этикетке, с мерной ложкой или другой единицей. */
+    private val _myFoods = MutableStateFlow(FoodDb.seed).also { FoodDb.mine = it.value }
+    val myFoods: StateFlow<List<Food>> = _myFoods
+
+    private val SEED_V1 = setOf("seed_f1", "seed_green")
+
+    fun setMyFoods(l: List<Food>) {
+        _myFoods.value = l; FoodDb.mine = l
+        Log.i("Repo", "свои продукты: ${l.size}")
+        scheduleSave()
+    }
+
     /** Группы пунктов (см. [Group]). */
     private val _groups = MutableStateFlow(defaultGroups())
     val groups: StateFlow<List<Group>> = _groups
@@ -62,9 +85,12 @@ class Repo(context: Context) {
 
     /** Плитка экрана «День»: id пункта (или id группы отметок), размер в клетках (0 — по содержимому). */
     data class Tile(val id: String, val w: Int = 0, val h: Int = 0, val small: Boolean = false) {
-        /** Одно из четырёх положений; старые произвольные размеры приводятся к ближайшему. */
+        /** Ближайшее из именованных положений (для раскладки по умолчанию и подсказок). */
         val size: TileSize get() = when { !small -> TileSize.FULL; w >= 3 -> TileSize.WIDE; w == 2 -> TileSize.HALF; else -> TileSize.MINI }
-        fun snapped(): Tile = size.tile(id)
+        /** 5.47: уменьшенная плитка — любой размер 1…6 × 1…3 клетки; развёрнутая — по содержимому. */
+        fun normalized(): Tile = if (!small) Tile(id) else Tile(id, w.coerceIn(1, MAX_W), h.coerceIn(1, MAX_H), true)
+        fun snapped(): Tile = normalized()
+        companion object { const val MAX_W = 6; const val MAX_H = 3 }
     }
     private val _layout = MutableStateFlow<List<Tile>>(emptyList())
     val layout: StateFlow<List<Tile>> = _layout
@@ -135,7 +161,7 @@ class Repo(context: Context) {
             if (d[manualKey(item.id)] != null) return@forEach
             val synced = d[Workouts.syncedKey(item.id)]; val manual = d[Workouts.manualKey(item.id)]
             if (synced == null && manual == null) return@forEach
-            val total = Workouts.counted(Workouts.parse(synced) + Workouts.parse(manual), countWalking())
+            val total = Workouts.counted(Workouts.merge(Workouts.parse(synced), Workouts.parse(manual)).first, countWalking())
             d = if (total > 0 || synced != null || manual != null) d + (item.id to total.toString()) else d - item.id
         }
         return d
@@ -188,7 +214,7 @@ class Repo(context: Context) {
     fun tiles(template: List<TemplateItem>, layout: List<Tile>, gs: List<Group> = _groups.value): List<Tile> {
         val ids = LinkedHashSet<String>()
         template.filter { !it.hidden }.forEach { ids += tileIdOf(it, gs) }
-        val known = layout.filter { it.id in ids }.distinctBy { it.id }.map { it.snapped() }
+        val known = layout.filter { it.id in ids }.distinctBy { it.id }.map { it.normalized() }
         return known + ids.filter { id -> known.none { it.id == id } }.map { Tile(it) }
     }
 
@@ -196,6 +222,39 @@ class Repo(context: Context) {
     private fun ordered(template: List<TemplateItem>, layout: List<Tile>): List<TemplateItem> {
         val idx = tiles(template, layout).mapIndexed { i, t -> t.id to i }.toMap()
         return template.sortedBy { idx[tileIdOf(it)] ?: Int.MAX_VALUE }
+    }
+
+    /**
+     * Удобная раскладка «с нуля» (5.36): сверху цель, затем быстрые показатели парами (оценка, сон, вода, шаги),
+     * совет дня, питание и отметки — во всю ширину (их заполняют чаще всего), дальше тренировка, мелкие показатели,
+     * чекап и финансы. Порядок и размеры — по виду пункта, поэтому подходит любому шаблону.
+     */
+    fun ergonomicLayout(): List<Tile> {
+        val gs = _groups.value
+        fun rank(id: String): Pair<Int, TileSize> {
+            if (gs.any { it.id == id }) return 50 to TileSize.FULL
+            val it = _template.value.firstOrNull { t -> t.id == id } ?: return 90 to TileSize.WIDE
+            return when {
+                it.type == ItemType.GOAL -> 0 to TileSize.WIDE
+                it.type == ItemType.RHYTHM -> 1 to TileSize.WIDE
+                it.type == ItemType.SCALE -> 10 to TileSize.HALF
+                it.source == Source.HC_SLEEP -> 11 to TileSize.HALF
+                it.type == ItemType.WATER -> 12 to TileSize.HALF
+                it.source == Source.HC_STEPS -> 13 to TileSize.HALF
+                it.type == ItemType.TIPS -> 20 to TileSize.WIDE
+                it.type == ItemType.MEALS -> 30 to TileSize.FULL
+                it.type == ItemType.TRAINING -> 60 to TileSize.WIDE
+                it.source == Source.HC_WEIGHT || it.type == ItemType.BODY -> 70 to TileSize.HALF
+                it.type == ItemType.MULTI -> 71 to TileSize.HALF
+                it.type == ItemType.NUMBER || it.type == ItemType.DURATION -> 72 to TileSize.MINI
+                it.type == ItemType.WELLBEING -> 80 to TileSize.WIDE
+                it.type == ItemType.TEXT -> 81 to TileSize.HALF
+                it.type == ItemType.EXPENSES -> 82 to TileSize.WIDE
+                else -> 85 to TileSize.WIDE
+            }
+        }
+        val cur = tiles(_template.value, _layout.value, gs)
+        return cur.map { t -> t.id to rank(t.id) }.sortedBy { it.second.first }.map { (id, r) -> r.second.tile(id) }
     }
 
     fun setLayout(l: List<Tile>) {
@@ -230,6 +289,16 @@ class Repo(context: Context) {
         val g = Group(Group.newId(), name.trim(), kind)
         _groups.update { it + g }
         Log.i("Repo", "новая группа ${g.name} (${kind.name})")
+        scheduleSave()
+        return g
+    }
+
+    /** 5.59: группа с заданным id (для готовых наборов); есть — не трогаем. */
+    fun ensureGroup(id: String, name: String, kind: GroupKind): Group {
+        _groups.value.firstOrNull { it.id == id }?.let { return it }
+        val g = Group(id, name, kind)
+        _groups.update { it + g }
+        Log.i("Repo", "группа $name ($id)")
         scheduleSave()
         return g
     }
@@ -281,6 +350,17 @@ class Repo(context: Context) {
     // ---------- openScale ----------
 
     /** Добавляет блок «Весы» в шаблон (если его нет) и скрывает отдельный пункт веса с Health Connect. */
+    /** 5.51: пункт «Тренировки» (куда пишутся занятия с таймера и вручную); если его удалили — вернуть. */
+    fun exerciseItem(): TemplateItem {
+        _template.value.firstOrNull { it.source == Source.HC_EXERCISE }?.let { return it }
+        val item = TemplateItem(id = if (_template.value.any { it.id == "ex" }) "ex_" + System.currentTimeMillis() else "ex",
+            name = "Тренировки", type = ItemType.NUMBER, unit = "мин", source = Source.HC_EXERCISE)
+        _template.update { it + item }
+        Log.i("Repo", "добавлен пункт тренировок для аэробной нагрузки")
+        scheduleSave()
+        return item
+    }
+
     fun ensureBodyItem(): Boolean {
         if (_template.value.any { it.type == ItemType.BODY }) return false
         _template.update { list ->
@@ -333,6 +413,14 @@ class Repo(context: Context) {
     // ---------- шаблон ----------
 
     fun upsertItem(item: TemplateItem) {
+        // 5.34: переименовал вариант списка — переименовываем и в записанных днях, и в настройках итогов месяца,
+        // иначе старое название остаётся в анализе («Что влияет на индекс дня»)
+        _template.value.firstOrNull { it.id == item.id && it.type == ItemType.MULTI && item.type == ItemType.MULTI }?.let { old ->
+            if (old.options.size == item.options.size) {
+                val ren = old.options.zip(item.options).filter { (a, b) -> a != b && b !in old.options && a !in item.options }.toMap()
+                if (ren.isNotEmpty()) renameOptions(item.id, ren)
+            }
+        }
         val fixed = item.copy(group = groupOf(item).id)
         _template.update { list ->
             val i = list.indexOfFirst { it.id == item.id }
@@ -341,6 +429,31 @@ class Repo(context: Context) {
             else list.filterNot { it.id == item.id } + fixed
             ordered(l, _layout.value)
         }
+        scheduleSave()
+    }
+
+    /** Переименовать варианты списка [id] во всех днях и в настройках итогов месяца: старое → новое. */
+    fun renameOptions(id: String, ren: Map<String, String>) {
+        _entries.update { all ->
+            all.mapValues { (_, day) ->
+                val v = day[id] ?: return@mapValues day
+                val c = parseCounts(v)
+                if (c.keys.none { it in ren }) day else {
+                    val n = LinkedHashMap<String, Int>()
+                    c.forEach { (k, x) -> val nk = ren[k] ?: k; n[nk] = (n[nk] ?: 0) + x }
+                    countsToString(n)?.let { day + (id to it) } ?: (day - id)
+                }
+            }
+        }
+        runCatching {
+            val p = Prefs(appCtx); val cfg = p.monthCfg
+            fun k(x: String) = ren.entries.fold(x) { acc, (a, b) -> if (acc == "$id:$a") "$id:$b" else acc }
+            p.monthCfg = cfg.copy(
+                index = cfg.index?.map(::k)?.toSet(), goals = cfg.goals.mapKeys { k(it.key) }, heat = cfg.heat?.map(::k)?.toSet(),
+                daily = cfg.daily.map(::k).toSet(), weekly = cfg.weekly.mapKeys { k(it.key) }, negative = cfg.negative.map(::k).toSet(),
+            )
+        }
+        Log.i("Repo", "переименованы варианты $id: $ren")
         scheduleSave()
     }
 
@@ -416,8 +529,11 @@ class Repo(context: Context) {
     // ---------- сохранение / резервная копия ----------
 
     fun toJson(): String = JSONObject().apply {
-        put("version", 4)
+        put("version", 8)
         put("checkups", JSONArray(_checkups.value.map { it.toJson() }))
+        if (!_profile.value.empty) put("profile", _profile.value.toJson())
+        put("myFoods", JSONArray(_myFoods.value.map { it.toJson() }))
+        put("myFoodsSeed", FoodDb.SEED_VER)
         put("template", JSONArray(_template.value.map { it.toJson() }))
         put("entries", JSONObject().apply {
             _entries.value.forEach { (d, vals) -> put(d, JSONObject(vals as Map<*, *>)) }
@@ -456,8 +572,54 @@ class Repo(context: Context) {
         val ver = o.optInt("version", 1)
         _template.value = (if (ver < 2) migrateV2(tmpl) else tmpl).let { if (ver < 3) migrateV3(it) else it }
             .let { if (ver < 4 && it.none { i -> i.type == ItemType.WELLBEING }) it + wellbeingTemplateItem() else it }
+            // 5.20: плитка «Советы дня» — в самый верх
+            .let { if (ver < 5 && it.none { i -> i.type == ItemType.TIPS }) listOf(tipsTemplateItem()) + it else it }
+        if (ver < 5 && _layout.value.isNotEmpty() && _layout.value.none { it.id == "tips" })
+            _layout.value = listOf(TileSize.WIDE.tile("tips")) + _layout.value
+        // 5.24: плитка «Тренировка» — сразу после советов
+        if (ver < 6 && _template.value.none { it.type == ItemType.TRAINING }) {
+            val t0 = _template.value
+            val at = t0.indexOfFirst { it.type == ItemType.TIPS }.let { if (it < 0) 0 else it + 1 }
+            _template.value = t0.take(at) + trainingTemplateItem() + t0.drop(at)
+            if (_layout.value.isNotEmpty() && _layout.value.none { it.id == "training" }) {
+                val l = _layout.value; val li = l.indexOfFirst { it.id == "tips" }.let { if (it < 0) 0 else it + 1 }
+                _layout.value = l.take(li) + TileSize.WIDE.tile("training") + l.drop(li)
+            }
+        }
+        // 5.31: плитка «Цель» — сразу после советов
+        if (ver < 7 && _template.value.none { it.type == ItemType.GOAL }) {
+            val t0 = _template.value
+            val at = t0.indexOfFirst { it.type == ItemType.TIPS }.let { if (it < 0) 0 else it + 1 }
+            _template.value = t0.take(at) + goalTemplateItem() + t0.drop(at)
+            if (_layout.value.isNotEmpty() && _layout.value.none { it.id == "goal" }) {
+                val l = _layout.value; val li = l.indexOfFirst { it.id == "tips" }.let { if (it < 0) 0 else it + 1 }
+                _layout.value = l.take(li) + TileSize.WIDE.tile("goal") + l.drop(li)
+            }
+        }
+        // 5.43: плитка «Ритм дня» — сразу после цели (раньше ритм жил внутри советов)
+        if (ver < 8 && _template.value.none { it.type == ItemType.RHYTHM }) {
+            val t0 = _template.value
+            val at = t0.indexOfFirst { it.type == ItemType.GOAL }.let { if (it < 0) t0.indexOfFirst { i -> i.type == ItemType.TIPS } else it }.let { if (it < 0) 0 else it + 1 }
+            _template.value = t0.take(at) + rhythmTemplateItem() + t0.drop(at)
+            if (_layout.value.isNotEmpty() && _layout.value.none { it.id == "rhythm" }) {
+                val l = _layout.value
+                val li = l.indexOfFirst { it.id == "goal" }.let { if (it < 0) l.indexOfFirst { t -> t.id == "tips" } else it }.let { if (it < 0) 0 else it + 1 }
+                _layout.value = l.take(li) + TileSize.WIDE.tile("rhythm") + l.drop(li)
+            }
+        }
         _trash.value = o.optJSONArray("trash")?.let { a -> (0 until a.length()).mapNotNull { runCatching { TemplateItem.fromJson(a.getJSONObject(it)) }.getOrNull() } } ?: emptyList()
         _checkups.value = o.optJSONArray("checkups")?.let { a -> (0 until a.length()).mapNotNull { runCatching { Checkup.fromJson(a.getJSONObject(it)) }.getOrNull() } } ?: emptyList()
+        // в старых копиях профиля нет — тогда оставляем текущий
+        o.optJSONObject("profile")?.let { _profile.value = Profile.fromJson(it) }
+        o.optJSONArray("myFoods")?.let { a ->
+            var l = (0 until a.length()).mapNotNull { runCatching { Food.fromJson(a.getJSONObject(it)) }.getOrNull() }
+            // 5.22.3: новые начальные продукты — один раз, не трогая свои и удалённые раньше
+            if (o.optInt("myFoodsSeed", 1) < FoodDb.SEED_VER) l = l + FoodDb.seed.filter { s -> l.none { it.id == s.id } && s.id !in SEED_V1 }
+            // 5.27: клетчатка и сахара с этикеток — в уже добавленные начальные продукты
+            l = l.map { f -> FoodDb.seed.firstOrNull { it.id == f.id }?.let { s -> f.copy(fib = f.fib ?: s.fib, sug = f.sug ?: s.sug, sat = f.sat ?: s.sat) } ?: f }
+            _myFoods.value = l
+            FoodDb.mine = l
+        }
         _entries.value = entries
         _monthNotes.value = notes
         normalizeGroups()
@@ -508,6 +670,12 @@ class Repo(context: Context) {
             zip.putNextEntry(java.util.zip.ZipEntry("data.json"))
             zip.write(toJson().toByteArray())
             zip.closeEntry()
+            // тренировки — программа, история, настройки
+            runCatching { org.maittaa.tabita.train.Backup.build(appCtx) }.getOrNull()?.let { t ->
+                zip.putNextEntry(java.util.zip.ZipEntry("train.json")); zip.write(t.toByteArray()); zip.closeEntry()
+            }
+            // 5.32: настройки приложения — цель и план, советы, режим дня, графики, напоминания, оформление, справочник
+            zip.putNextEntry(java.util.zip.ZipEntry("settings.json")); zip.write(Prefs(appCtx).backupJson().toByteArray()); zip.closeEntry()
             photosDir.listFiles()?.forEach { f ->
                 zip.putNextEntry(java.util.zip.ZipEntry("photos/" + f.name))
                 f.inputStream().use { it.copyTo(zip) }
@@ -525,6 +693,8 @@ class Repo(context: Context) {
             return ok
         }
         var json: String? = null
+        var train: String? = null
+        var settings: String? = null
         val photos = mutableMapOf<String, ByteArray>()
         java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
             while (true) {
@@ -532,6 +702,8 @@ class Repo(context: Context) {
                 val name = e.name
                 when {
                     name == "data.json" -> json = zip.readBytes().toString(Charsets.UTF_8)
+                    name == "train.json" -> train = zip.readBytes().toString(Charsets.UTF_8)
+                    name == "settings.json" -> settings = zip.readBytes().toString(Charsets.UTF_8)
                     name.startsWith("photos/") && !name.contains("..") && !e.isDirectory ->
                         photos[name.removePrefix("photos/")] = zip.readBytes()
                 }
@@ -540,6 +712,8 @@ class Repo(context: Context) {
         val ok = json?.let { loadJson(it) } ?: false
         if (ok) {
             photos.forEach { (n, b) -> File(photosDir, File(n).name).writeBytes(b) }
+            train?.let { t -> runCatching { org.maittaa.tabita.train.Backup.restore(appCtx, t) }.onFailure { Log.e("Repo", "тренировки из копии", it) } }
+            settings?.let { st -> runCatching { Prefs(appCtx).restoreJson(st) }.onFailure { Log.e("Repo", "настройки из копии", it) } }
             saveNow()
         }
         return ok

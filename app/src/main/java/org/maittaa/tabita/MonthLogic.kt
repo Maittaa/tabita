@@ -101,7 +101,25 @@ data class MonthCfg(
     val weekly: Map<String, Int> = emptyMap(),
     /** Отметки и варианты списков, которые идут в индекс со знаком «минус» (вредное: кофе, сигареты…). */
     val negative: Set<String> = emptySet(),
+    /** 5.37: цели и режимы — автоматически по цели «Программы»; вручную задаётся только состав индекса. */
+    val auto: Boolean = false,
 ) {
+    /**
+     * Автонастройка под цель: сон, шаги и тренировки — по цели, остальное — по умолчанию (оценка дня ≥ 70 % шкалы,
+     * вода ≥ нормы, прочее — медиана); галочки — бонус, «минус» для вредного остаётся как отмечено раньше.
+     */
+    fun autoApply(template: List<TemplateItem>, goal: Goal?): MonthCfg {
+        val g = mutableMapOf<String, Double>()
+        template.forEach { it ->
+            when (it.source) {
+                Source.HC_SLEEP -> g[it.id] = if (goal == Goal.WELLBEING) 450.0 else 420.0
+                Source.HC_STEPS -> g[it.id] = when (goal) { Goal.LOSE -> 9000.0; Goal.WELLBEING -> 8000.0; Goal.MUSCLE, Goal.GAIN, Goal.DEFICITS -> 7000.0; null -> 8000.0 }
+                Source.HC_EXERCISE -> g[it.id] = when (goal) { Goal.LOSE, Goal.MUSCLE, Goal.WELLBEING -> 30.0; else -> 20.0 }
+                else -> {}
+            }
+        }
+        return copy(auto = true, goals = g, daily = emptySet(), weekly = emptyMap())
+    }
     /** Задать участие пункта в индексе: null — не влияет, true — плюс, false — минус. [all] — текущий состав индекса. */
     fun withEffect(key: String, plus: Boolean?, all: Set<String>): MonthCfg = copy(
         index = if (plus == null) all - key else all + key,
@@ -116,6 +134,7 @@ data class MonthCfg(
         put("daily", org.json.JSONArray(daily.toList()))
         put("weekly", JSONObject(weekly as Map<*, *>))
         put("neg", org.json.JSONArray(negative.toList()))
+        put("auto", auto)
     }.toString()
 
     companion object {
@@ -131,6 +150,7 @@ data class MonthCfg(
                 daily = o.optJSONArray("daily")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
                 weekly = o.optJSONObject("weekly")?.let { w -> w.keys().asSequence().associateWith { w.getInt(it) } } ?: emptyMap(),
                 negative = o.optJSONArray("neg")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
+                auto = o.optBoolean("auto", false),
             )
         }.getOrDefault(MonthCfg())
     }
@@ -155,7 +175,8 @@ fun monthMetrics(template: List<TemplateItem>, seen: List<Map<String, String>>):
             ItemType.MULTI -> {
                 val opts = LinkedHashSet<String>()
                 seen.forEach { d -> opts += parseCounts(d[item.id]).keys }
-                (item.options.filter { it in opts } + opts.filter { it !in item.options }).forEach { o ->
+                // только текущие варианты: переименованные и удалённые в анализ не попадают
+                item.options.filter { it in opts }.forEach { o ->
                     out += Metric(item.id + ":" + o, item, MKind.OPTION, o)
                 }
             }
@@ -196,14 +217,17 @@ class MonthData(
     fun series(m: Metric, ds: List<LocalDate> = days): List<Double?> = ds.map { value(m, it) }
 
     fun goal(m: Metric): Double = cfg.goals[m.key] ?: m.defaultGoal(series(m, prevDays + days))
-    fun met(m: Metric, v: Double?): Boolean = v != null && v >= goal(m) - 1e-9
+    /** 5.42: у воды своя норма на каждый день (Hydration, ключ `<id>!n`), если цель не задана вручную. */
+    fun goalOn(m: Metric, d: LocalDate?): Double =
+        if (d != null && m.kind == MKind.WATER && cfg.goals[m.key] == null) Hydration.normOf(m.item, dayMap(d)) else goal(m)
+    fun met(m: Metric, v: Double?, d: LocalDate? = null): Boolean = v != null && v >= goalOn(m, d) - 1e-9
 
     // ---------- 1. тепловая карта ----------
 
     /** Уровень клетки: null — пропуск, 0 — нет, 1 — чуть, 2 — норма, 3 — много. */
-    fun level(m: Metric, v: Double?): Int? {
+    fun level(m: Metric, v: Double?, d: LocalDate? = null): Int? {
         if (v == null) return null
-        val g = goal(m)
+        val g = goalOn(m, d)
         return when (m.kind) {
             MKind.CHECK -> when { v <= 0 -> 0; v >= 2 -> 3; else -> 2 }
             MKind.OPTION -> when { v <= 0 -> 0; v < 2 -> 1; v < 3 -> 2; else -> 3 }
@@ -222,7 +246,7 @@ class MonthData(
     /** Строки карты: только метрики, у которых в месяце есть хоть одно ненулевое значение. */
     val heatRows: List<Pair<Metric, List<Int?>>> = metrics.filter { cfg.heat == null || it.key in cfg.heat }.mapNotNull { m ->
         val s = series(m)
-        if (s.none { (it ?: 0.0) > 0 }) null else m to s.map { level(m, it) }
+        if (s.none { (it ?: 0.0) > 0 }) null else m to s.mapIndexed { i, v -> level(m, v, days[i]) }
     }
 
     // ---------- 3. индекс дня ----------
@@ -246,7 +270,7 @@ class MonthData(
     fun isNegative(m: Metric) = (m.kind == MKind.CHECK || m.kind == MKind.OPTION) && m.key in cfg.negative
 
     /** Вклад метрики в индекс, 0..1; null — не учитывается в этот день. */
-    fun score(m: Metric, v: Double?): Double? {
+    fun score(m: Metric, v: Double?, d: LocalDate? = null): Double? {
         if (v == null) return null
         if (isNegative(m)) return when (m.kind) {
             // минус: отмечено — ноль; «каждый день» — день без отметки идёт в плюс
@@ -257,7 +281,7 @@ class MonthData(
         return when (m.kind) {
             MKind.CHECK -> if (v >= 1) 1.0 else if (isDaily(m)) 0.0 else null
             MKind.SCALE -> if (m.item.max > m.item.min) ((v - m.item.min) / (m.item.max - m.item.min)).coerceIn(0.0, 1.0) else null
-            else -> (v / goal(m)).coerceIn(0.0, 1.0)
+            else -> (v / goalOn(m, d)).coerceIn(0.0, 1.0)
         }
     }
 
@@ -270,12 +294,16 @@ class MonthData(
         val counted get() = value != null && !partial
     }
 
+    /** Тренировки (Health Connect или пункт «Тренировка» с минутами). */
+    fun isWorkout(m: Metric) = m.item.source == Source.HC_EXERCISE || m.item.id == "tr" && m.kind != MKind.CHECK
+
     fun dayIndex(d: LocalDate): DayIndex {
         val ms = indexMetrics
         if (ms.isEmpty() || d > today) return DayIndex(null, false, 0, 0, emptyList())
-        val core = ms.filter { it.kind != MKind.CHECK }
+        // тренировка — не обязательная запись: нет тренировки в этот день = день отдыха, а не пропуск (5.22.1)
+        val core = ms.filter { it.kind != MKind.CHECK && !(isWorkout(it) && value(it, d) == null) }
         val missing = core.filter { value(it, d) == null }
-        val sc = ms.mapNotNull { score(it, value(it, d)) }
+        val sc = ms.mapNotNull { score(it, value(it, d), d) }
         val rec = core.size - missing.size
         return DayIndex(
             sc.takeIf { it.isNotEmpty() }?.average()?.times(100),
@@ -354,25 +382,56 @@ class MonthData(
         (0..6).map { monday.plusDays(it.toLong()) }.filter { it <= today }.count { (value(m, it) ?: 0.0) >= 1 }
 
     /**
-     * Серия дней с записью: день засчитан, если записано хоть что-то вручную.
-     * Один пропуск в неделю серию не рвёт; сегодняшний незаполненный день — тоже.
-     * Возвращает длину и использован ли пропуск на неделе [d].
+     * Серия дней с записью (5.66): день засчитан, если записано хоть что-то вручную; сегодняшний
+     * незаполненный день серию не рвёт. Заморозки: за каждые 7 заполненных дней — одна, запас не больше 3.
+     * Пропуск сам тратит заморозки, если их хватает на весь пропуск; если пропуск длиннее запаса —
+     * серия начинается заново, а заморозки не сгорают.
      */
-    fun recordStreak(d: LocalDate): Pair<Int, Boolean> {
-        var day = d
-        var n = 0
-        val frozen = mutableSetOf<LocalDate>()
-        if (!filled(day)) day = day.minusDays(1)
-        repeat(800) {
-            if (filled(day)) n++
-            else {
-                val wk = day.with(DayOfWeek.MONDAY)
-                if (wk in frozen) return n to (d.with(DayOfWeek.MONDAY) in frozen)
-                frozen += wk
+    data class Streak(
+        val days: Int, val freezes: Int,
+        /** Заполненных дней к следующей заморозке, 0..6. */
+        val toNext: Int,
+        /** Дни, закрытые заморозкой в текущей серии. */
+        val frozen: List<LocalDate>,
+        /** Серия прервалась вчера или раньше, и после этого ещё ничего не записано. */
+        val broken: Boolean,
+    )
+
+    fun streak(d: LocalDate): Streak {
+        val start = entries.keys.mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }
+            .filter { it <= d && filled(it) }.minOrNull() ?: return Streak(0, 0, 0, emptyList(), false)
+        var n = 0; var bank = 0; var total = 0; var broken = false
+        val frozen = mutableListOf<LocalDate>()
+        var day = start
+        while (day <= d) {
+            if (filled(day)) {
+                n++; total++; broken = false
+                if (total % FREEZE_EVERY == 0) bank = minOf(MAX_FREEZES, bank + 1)
+                day = day.plusDays(1); continue
             }
-            day = day.minusDays(1)
+            if (day == d) break // сегодня ещё можно заполнить
+            // длина пропуска — до следующего заполненного дня или до сегодня
+            var end = day
+            while (end.plusDays(1) < d && !filled(end.plusDays(1))) end = end.plusDays(1)
+            val gap = (java.time.temporal.ChronoUnit.DAYS.between(day, end) + 1).toInt()
+            if (n > 0 && gap <= bank) {
+                bank -= gap
+                var x = day; while (x <= end) { frozen += x; x = x.plusDays(1) }
+            } else {
+                if (n > 0) broken = true
+                n = 0; frozen.clear()
+            }
+            day = end.plusDays(1)
         }
-        return n to (d.with(DayOfWeek.MONDAY) in frozen)
+        return Streak(n, bank, total % FREEZE_EVERY, frozen.toList(), broken && n == 0)
+    }
+
+    /** Совместимость: длина серии и была ли заморозка за последние 7 дней. */
+    fun recordStreak(d: LocalDate): Pair<Int, Boolean> = streak(d).let { s -> s.days to s.frozen.any { it > d.minusDays(7) } }
+
+    companion object {
+        const val MAX_FREEZES = 3
+        const val FREEZE_EVERY = 7
     }
 
     // ---------- 2. что влияет на итог дня ----------
@@ -406,14 +465,14 @@ class MonthData(
         metrics.filter { it.key !in skip }.forEach { m ->
             val g = factorGoal(m)
             add(if (m.kind == MKind.OPTION) m.factorTitle(g) else m.factorTitle(goal(m))) { d ->
-                value(m, d)?.let { if (m.kind == MKind.OPTION) it >= g else met(m, it) }
+                value(m, d)?.let { if (m.kind == MKind.OPTION) it >= g else met(m, it, d) }
             }
         }
         // «накануне» — для отметок, списков и тренировок
         metrics.filter { it.key !in skip && (it.kind == MKind.CHECK || it.kind == MKind.OPTION || it.item.source == Source.HC_EXERCISE) }.forEach { m ->
             val g = factorGoal(m)
             add(t("%s накануне", if (m.kind == MKind.OPTION) m.factorTitle(g) else m.factorTitle(goal(m)))) { d ->
-                value(m, d.minusDays(1))?.let { if (m.kind == MKind.OPTION) it >= g else met(m, it) }
+                value(m, d.minusDays(1))?.let { if (m.kind == MKind.OPTION) it >= g else met(m, it, d.minusDays(1)) }
             }
         }
         // сначала надёжные по силе эффекта, потом ненадёжные
@@ -447,7 +506,8 @@ class MonthData(
                 val (a, b) = weeksMet(m, days); val (pa, pb) = weeksMet(m, prevDays)
                 return@mapNotNull GoalRow(m, t("%d р/нед", w), a, b, pa, pb, weeks = true)
             }
-            GoalRow(m, m.goalText(goal(m)), cur.count { met(m, it) }, of, prev.count { met(m, it) }, pOf)
+            GoalRow(m, m.goalText(goal(m)), cur.indices.count { met(m, cur[it], days[it]) }, of,
+                prev.indices.count { met(m, prev[it], prevDays[it]) }, pOf)
         }
     }
 }

@@ -27,9 +27,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -49,21 +51,14 @@ private val WaterBlue = Color(0xFF3D8BD9)
 /** Литры красиво: 1,25 л */
 fun formatLiters(l: Double): String = formatNumber(Math.round(l * 100) / 100.0) + " " + t("л")
 
-/** Ориентир нормы: 30 мл на кг веса + 0,5 л на каждый час тренировки. */
-data class WaterAdvice(val weight: Double?, val exerciseMin: Double?, val base: Double?, val extra: Double, val total: Double?)
-
-fun waterAdvice(repo: Repo, date: String, day: Map<String, String>): WaterAdvice {
-    val w = repo.latestWeight(date)
-    val ex = repo.template.value.filter { it.source == Source.HC_EXERCISE }.firstNotNullOfOrNull { parseNumber(day[it.id]) }
-    val base = w?.let { it * 0.030 }
-    val extra = (ex ?: 0.0) / 60.0 * 0.5
-    val total = base?.let { Math.round((it + extra) * 10) / 10.0 }
-    return WaterAdvice(w, ex, base, extra, total)
-}
-
 @Composable
-fun WaterBlock(repo: Repo, item: TemplateItem, date: String, day: Map<String, String>) {
-    val norm = item.max.takeIf { it > 0 } ?: 2.0
+fun WaterBlock(repo: Repo, prefs: Prefs, item: TemplateItem, date: String, day: Map<String, String>) {
+    var auto by remember { mutableStateOf(prefs.waterAuto) }
+    var tick by remember { mutableStateOf(0) }
+    // 5.42: норма дня считается сама (вес, тренировки, шаги) и сохраняется в день
+    val calc = remember(date, day, tick) { runCatching { Hydration.calc(repo, prefs, date, day) }.getOrNull() }
+    LaunchedEffect(date, calc?.total, auto) { Hydration.updateNorms(repo, prefs, listOf(date)) }
+    val norm = if (auto && calc != null) calc.total else Hydration.normOf(item, if (auto) day else null)
     val stored = parseNumber(day[item.id]) ?: 0.0
     var cur by remember(date) { mutableFloatStateOf(stored.toFloat()) }
     var pushed by remember(date) { mutableStateOf(stored) }
@@ -80,7 +75,7 @@ fun WaterBlock(repo: Repo, item: TemplateItem, date: String, day: Map<String, St
     val fill by animateFloatAsState((cur / norm).toFloat().coerceIn(0f, 1f), label = "water")
 
     SectionCard(item.displayName, action = {
-        TextButton(onClick = { editNorm = true }) { Text(t("Норма %s", formatLiters(norm))) }
+        TextButton(onClick = { editNorm = true }) { Text((if (auto && calc != null) t("Норма %s · авто", formatLiters(norm)) else t("Норма %s", formatLiters(norm)))) }
     }) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(formatLiters(cur.toDouble()), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = WaterBlue)
@@ -91,6 +86,9 @@ fun WaterBlock(repo: Repo, item: TemplateItem, date: String, day: Map<String, St
             if (cur >= norm) Text("✓ " + t("норма"), color = Color(0xFF3FA66B), fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 4.dp))
         }
+        if (auto && calc != null && calc.workoutLiters >= 0.05) Text(
+            t("С тренировками: +%s к обычной норме", formatLiters(Math.round(calc.workoutLiters * 10) / 10.0)),
+            style = MaterialTheme.typography.bodySmall, color = WaterBlue)
         Spacer(Modifier.height(6.dp))
         // «стакан»: заполнение к норме
         Box(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(7.dp)).background(WaterBlue.copy(alpha = 0.15f))) {
@@ -111,53 +109,89 @@ fun WaterBlock(repo: Repo, item: TemplateItem, date: String, day: Map<String, St
             FilledTonalButton(onClick = { save(cur + 0.5) }, Modifier.weight(1f),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) { Text(t("+ 500 мл")) }
         }
-        // подсказка по расчёту нормы
         Row(Modifier.fillMaxWidth().clickable { showHint = !showHint }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.AutoMirrored.Filled.HelpOutline, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
-            Text(t("Как рассчитать норму?"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(t("Из чего норма"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         }
         AnimatedVisibility(showHint) {
-            val a = waterAdvice(repo, date, day)
-            Column(Modifier.padding(top = 6.dp).clip(RoundedCornerShape(10.dp))
-                .background(WaterBlue.copy(alpha = 0.08f)).padding(10.dp)) {
-                Text(t("Ориентир: около 30 мл воды на 1 кг веса в сутки, плюс примерно 0,5 л на каждый час тренировки. В жару и при сильной потливости нужно больше."),
-                    style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(6.dp))
-                if (a.weight != null && a.base != null) {
-                    Text(t("Ваш вес %s кг × 30 мл = %s", formatNumber(Math.round(a.weight * 10) / 10.0), formatLiters(a.base)),
-                        style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                    if (a.extra > 0) Text(t("Тренировка %s мин → + %s", formatNumber(Math.round(a.exerciseMin ?: 0.0).toDouble()), formatLiters(a.extra)),
-                        style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                    Text(t("Итого на сегодня ≈ %s", formatLiters(a.total!!)), style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold, color = WaterBlue)
-                    if (Math.abs(a.total - norm) >= 0.05) TextButton(onClick = { repo.upsertItem(item.copy(max = a.total)) }) {
-                        Text(t("Сделать нормой %s", formatLiters(a.total)))
-                    }
-                } else Text(t("Добавьте вес (весы или пункт «Вес»), и норма посчитается автоматически."), style = MaterialTheme.typography.bodySmall)
-                Text(t("Это общий ориентир, не медицинская рекомендация. При болезнях почек или сердца норму воды обсудите с врачом."),
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp))
-            }
+            WaterBreakdown(prefs, calc, auto) { tick++ }
         }
     }
 
     if (editNorm) {
-        var s by remember { mutableStateOf(formatNumber(norm)) }
+        var s by remember { mutableStateOf(formatNumber(item.max.takeIf { it > 0 } ?: 2.0)) }
+        var a by remember { mutableStateOf(auto) }
         AlertDialog(
             onDismissRequest = { editNorm = false },
             title = { Text(t("Норма воды в день")) },
             text = {
-                OutlinedTextField(s, { s = it }, singleLine = true, suffix = { Text(t("л")) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(t("Считать автоматически"), Modifier.weight(1f))
+                        Switch(a, { a = it })
+                    }
+                    Text(
+                        if (a) t("Каждый день: вес × 30 мл + тренировки + шаги сверх обычного. Нужен вес — с весов или пункта «Вес».")
+                        else t("Одна норма на все дни."),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!a) OutlinedTextField(s, { s = it }, singleLine = true, suffix = { Text(t("л")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    parseNumber(s)?.takeIf { it in 0.3..10.0 }?.let { repo.upsertItem(item.copy(max = it)); Log.i("Water", "норма: $it л") }
+                    prefs.waterAuto = a; auto = a
+                    if (!a) parseNumber(s)?.takeIf { it in 0.3..10.0 }?.let { repo.upsertItem(item.copy(max = it)); Log.i("Water", "норма: $it л") }
+                    Hydration.updateNorms(repo, prefs, listOf(date))
+                    Log.i("Water", "норма автоматически: $a")
                     editNorm = false
                 }) { Text(t("Сохранить")) }
             },
             dismissButton = { TextButton(onClick = { editNorm = false }) { Text(t("Отмена")) } },
         )
+    }
+}
+
+/** Расклад нормы и личная потеря пота. */
+@Composable
+private fun WaterBreakdown(prefs: Prefs, a: Hydration.Calc?, auto: Boolean, changed: () -> Unit) {
+    val small = MaterialTheme.typography.bodySmall
+    Column(Modifier.padding(top = 6.dp).clip(RoundedCornerShape(10.dp))
+        .background(WaterBlue.copy(alpha = 0.08f)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        if (a == null) {
+            Text(t("Добавьте вес (весы или пункт «Вес»), и норма посчитается автоматически."), style = small)
+        } else {
+            Text(t("Вес %s кг × 30 мл = %s", formatNumber(Math.round(a.weight * 10) / 10.0), formatLiters(Math.round(a.base * 10) / 10.0)),
+                style = small, fontWeight = FontWeight.SemiBold)
+            a.workouts.forEach { p ->
+                Text(t("%s %d мин → + %s", Workouts.kind(p.session.kind).title, p.session.min, formatLiters(Math.round(p.liters * 10) / 10.0)),
+                    style = small, fontWeight = FontWeight.SemiBold)
+            }
+            if (a.stepsLiters >= 0.05) Text(t("Шаги сверх %s: + %s → + %s", formatNumber(Hydration.STEPS_USUAL),
+                formatNumber(Math.round(a.stepsOver).toDouble()), formatLiters(Math.round(a.stepsLiters * 10) / 10.0)), style = small, fontWeight = FontWeight.SemiBold)
+            Text(t("Итого на день ≈ %s", formatLiters(a.total)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = WaterBlue)
+            if (!auto) Text(t("Сейчас норма задана вручную — включите «Считать автоматически» в окне нормы."), style = small)
+        }
+        Spacer(Modifier.height(4.dp))
+        val (rate, personal) = Hydration.sweatRate(prefs)
+        Text(
+            if (personal) t("Ваша потеря с потом: %s л/ч (по замерам до и после тренировки)", formatNumber(rate))
+            else t("Потеря с потом взята средняя: %s л/ч. У разных людей — от 0,5 до 2 л/ч.", formatNumber(rate)),
+            style = small, fontWeight = FontWeight.SemiBold,
+        )
+        Text(t("Как узнать свою: встаньте на весы прямо перед тренировкой и сразу после, до того как попьёте. Tabita сама найдёт эти взвешивания в openScale и посчитает."),
+            style = small)
+        val samples = Hydration.samples(prefs)
+        if (samples.isNotEmpty()) {
+            samples.takeLast(3).reversed().forEach { s ->
+                Text("• " + t("%s: %s %d мин, −%s кг → %s л/ч", s.date, Workouts.kind(s.kind).title.lowercase(), s.min,
+                    formatNumber(s.lossKg), formatNumber(s.rate)), style = small)
+            }
+            TextButton(onClick = { Hydration.clearSamples(prefs); changed() }) { Text(t("Сбросить замеры")) }
+        }
+        Text(t("Это общий ориентир, не медицинская рекомендация. В жару нужно больше. При болезнях почек или сердца норму воды обсудите с врачом."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

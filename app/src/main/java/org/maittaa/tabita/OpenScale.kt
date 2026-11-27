@@ -17,6 +17,17 @@ data class BodyMetric(val id: String, val name: String, val unit: String, val va
 
 /** Значение блока «Весы» за день: последнее взвешивание дня. */
 data class BodyDay(val time: Long, val metrics: List<BodyMetric>) {
+    /** Утреннее взвешивание (4:00–10:59) — натощак, состав тела сравним между днями. */
+    fun morning(zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) =
+        java.time.Instant.ofEpochMilli(time).atZone(zone).hour in 4..10
+    fun value(key: String) = metrics.firstOrNull { BodyCatalog.key(it.id) == key }
+    /** Мышцы в кг (если весы дают %, — от веса). */
+    fun muscleKg(): Double? {
+        val m = value("muscle") ?: return null
+        if (m.unit != "%") return m.value
+        val w = value("weight")?.value ?: return null
+        return w * m.value / 100
+    }
     fun toJson(): String = JSONObject().put("t", time).put("m", JSONArray(metrics.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.unit).put("v", it.value)
     })).toString()
@@ -96,11 +107,36 @@ class OpenScale(private val ctx: Context) {
                 val metrics = if (jsonI >= 0 && !c.isNull(jsonI)) parseValues(c.getString(jsonI))
                 else legacy(c, cols)
                 if (metrics.isEmpty()) continue
+                // 5.25: за день берём утреннее взвешивание (первое до 11:00) — оно сравнимо между днями;
+                // если утром не взвешивались — последнее за день
                 val prev = res[day]
-                if (prev == null || time >= prev.time) res[day] = BodyDay(time, metrics)
+                val cand = BodyDay(time, metrics)
+                res[day] = when {
+                    prev == null -> cand
+                    cand.morning(zone) && (!prev.morning(zone) || time < prev.time) -> cand
+                    !cand.morning(zone) && !prev.morning(zone) && time >= prev.time -> cand
+                    else -> prev
+                }
             }
         }
         res
+    }
+
+    /** 5.42: все взвешивания (время, вес кг) начиная с [fromMs] — для замера потери пота. */
+    suspend fun weighIns(pkg: String, userId: Long, fromMs: Long): List<Pair<Long, Double>> = withContext(Dispatchers.IO) {
+        ctx.contentResolver.query(uri(pkg, "measurements/$userId"), null, null, null, null)?.use { c ->
+            val cols = c.columnNames.toList()
+            val dtI = c.getColumnIndex("datetime"); val jsonI = c.getColumnIndex("values_json")
+            buildList {
+                while (c.moveToNext()) {
+                    val time = c.getLong(dtI)
+                    if (time < fromMs) continue
+                    val metrics = if (jsonI >= 0 && !c.isNull(jsonI)) parseValues(c.getString(jsonI)) else legacy(c, cols)
+                    val w = metrics.firstOrNull { BodyCatalog.key(it.id) == "weight" }?.value ?: continue
+                    if (w in 20.0..400.0) add(time to w)
+                }
+            }
+        } ?: emptyList()
     }
 
     /** API v3: values_json = [{identity, name, unit, value|text, ...}] */
@@ -122,5 +158,37 @@ class OpenScale(private val ctx: Context) {
             val i = cols.indexOf(col)
             if (i < 0 || c.isNull(i)) null else BodyMetric("legacy:$col", nu.first, nu.second, c.getDouble(i)).takeIf { it.value > 0 }
         }
+    }
+}
+
+
+/**
+ * Проверка правдоподобности состава тела (5.25). Биоимпеданс зависит от воды: отёки, соль, еда, время взвешивания.
+ * Реальные изменения тканей — до ~0,25–0,5 кг мышц и ~0,5–1 % жира в неделю; заметно больше за ≤ 7 дней — скорее вода.
+ */
+object BodyCheck {
+    const val MUSCLE_KG_WEEK = 1.0
+    const val FAT_PCT_WEEK = 1.5
+
+    data class Jump(val days: Int, val muscleKg: Double?, val fatPct: Double?)
+
+    /** Скачок относительно взвешивания 3–7 дней назад, если он неправдоподобен. */
+    fun jump(entries: Map<String, Map<String, String>>, itemId: String, date: java.time.LocalDate): Jump? {
+        val cur = BodyDay.parse(entries[date.toString()]?.get(itemId)) ?: return null
+        for (k in 3..7) {
+            val prev = BodyDay.parse(entries[date.minusDays(k.toLong()).toString()]?.get(itemId)) ?: continue
+            val dm = cur.muscleKg()?.let { a -> prev.muscleKg()?.let { a - it } }
+            val df = cur.value("body_fat")?.value?.let { a -> prev.value("body_fat")?.value?.let { a - it } }
+            val bad = (dm != null && kotlin.math.abs(dm) > MUSCLE_KG_WEEK) || (df != null && kotlin.math.abs(df) > FAT_PCT_WEEK)
+            return if (bad) Jump(k, dm, df) else null
+        }
+        return null
+    }
+
+    fun text(j: Jump): String {
+        fun sg(v: Double) = (if (v >= 0) "+" else "−") + formatNumber(Math.round(kotlin.math.abs(v) * 10) / 10.0)
+        val parts = listOfNotNull(j.muscleKg?.let { t("мышцы %s кг", sg(it)) }, j.fatPct?.let { t("жир %s %%", sg(it)) })
+        return t("За %d дн.: %s — так быстро ткани не меняются, это скорее вода (отёки, соль, еда, время взвешивания). Сравнивайте утренние взвешивания натощак и смотрите на тренд за 2–4 недели.",
+            j.days, parts.joinToString(", "))
     }
 }

@@ -22,8 +22,12 @@ import kotlin.random.Random
 object Reminders {
     private const val CH_REMIND = "remind"
     private const val CH_MOTIV = "motiv"
+    private const val CH_SLEEP = "sleep"
+    private const val RC_WIND = 3
+    private const val RC_BED = 4
     private const val RC_DAILY = 1
     private const val RC_PLAN = 2
+    private const val RC_WEEK = 5
     private const val RC_MOTIV = 100
     private const val MAX_MOTIV = 10
 
@@ -31,6 +35,7 @@ object Reminders {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_REMIND, t("Напоминание о дневнике"), NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(CH_MOTIV, t("Мотивация"), NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel(CH_SLEEP, t("Отбой"), NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     private fun pi(ctx: Context, action: String, rc: Int, text: String? = null): PendingIntent {
@@ -55,6 +60,8 @@ object Reminders {
         am.cancel(pi(ctx, "daily", RC_DAILY))
         am.cancel(pi(ctx, "plan", RC_PLAN))
         (0 until MAX_MOTIV).forEach { am.cancel(pi(ctx, "motiv", RC_MOTIV + it)) }
+        am.cancel(pi(ctx, "wind", RC_WIND)); am.cancel(pi(ctx, "bed", RC_BED))
+        am.cancel(pi(ctx, "week", RC_WEEK))
 
         val now = LocalDateTime.now()
         if (prefs.reminderOn) {
@@ -62,10 +69,37 @@ object Reminders {
             if (!t.isAfter(now)) t = t.plusDays(1)
             at(ctx, t, pi(ctx, "daily", RC_DAILY))
         }
-        if (prefs.motivOn && prefs.motivations.isNotEmpty()) {
-            planMotivations(ctx, prefs, LocalDate.now())
+        if (prefs.motivOn && prefs.motivations.isNotEmpty()) planMotivations(ctx, prefs, LocalDate.now())
+        if (prefs.weeklyOn) at(ctx, DayInsight.nextSunday(now), pi(ctx, "week", RC_WEEK))
+        if (prefs.bedOn) runCatching { planBedtime(ctx, prefs, now) }.onFailure { Log.e("Remind", "отбой", it) }
+        // пересчёт на новый день: мотивации — новые моменты, отбой — по свежему режиму и будильнику
+        if ((prefs.motivOn && prefs.motivations.isNotEmpty()) || prefs.bedOn)
             at(ctx, LocalDate.now().plusDays(1).atStartOfDay().plusMinutes(5), pi(ctx, "plan", RC_PLAN))
+    }
+
+    /**
+     * Отбой (5.33): время — из «Ритма дня» (будильник на завтра → привычный подъём, минус нужный сон).
+     * За [Prefs.bedLead] минут — «скоро отбой», в само время — «пора спать». Ночь считается по вечеру:
+     * до полудня — ещё прошлая ночь.
+     */
+    fun bedtimeAt(repo: Repo, prefs: Prefs, now: LocalDateTime): Pair<LocalDateTime, DayRhythm> {
+        var eve = if (now.hour < 12) now.toLocalDate().minusDays(1) else now.toLocalDate()
+        fun calc(d: LocalDate): Pair<LocalDateTime, DayRhythm> {
+            val r = DayRhythm.of(repo, d, prefs, d.atTime(20, 0), Alarms.next)
+            val t = d.atStartOfDay().plusMinutes(r.bed.toLong()).let { if (r.bed < 12 * 60) it.plusDays(1) else it }
+            return t to r
         }
+        var res = calc(eve)
+        if (!res.first.isAfter(now)) { eve = eve.plusDays(1); res = calc(eve) }
+        return res
+    }
+
+    private fun planBedtime(ctx: Context, prefs: Prefs, now: LocalDateTime) {
+        Alarms.refresh(ctx)
+        val (bed, _) = bedtimeAt(Repo(ctx), prefs, now)
+        val wind = bed.minusMinutes(prefs.bedLead.toLong())
+        if (prefs.bedLead > 0 && wind.isAfter(now)) at(ctx, wind, pi(ctx, "wind", RC_WIND))
+        at(ctx, bed, pi(ctx, "bed", RC_BED))
     }
 
     /** Случайные моменты в заданном окне на день [day]; прошедшие пропускаем. */
@@ -118,6 +152,20 @@ object Reminders {
         return if (missing.isEmpty()) null else t("Не хватает: %s — секунд десять.", missing.joinToString { it.title.lowercase() })
     }
 
+    /**
+     * 5.65: текст воскресного обзора — неделя пн–вс по данным дневника и Health Connect плюс главная
+     * надёжная находка «Что влияет». Тренировки из истории приложения здесь недоступны, поэтому правку
+     * про число силовых не предлагаем.
+     */
+    fun weekText(repo: Repo, prefs: Prefs, today: LocalDate): String? {
+        val start = today.with(java.time.DayOfWeek.MONDAY)
+        val r0 = WeekReview.of(repo, prefs, start, emptyList(), today)
+        val r1 = r0.copy(strength = WeekReview.Count(0, 0))
+        val r = r1.copy(fixes = WeekReview.fixes(r1, Goal.of(prefs.planGoal), PlanStats.of(repo, prefs, today).weight))
+        val f = DayInsight.topFactor(repo.template.value, repo.entries.value, prefs.monthCfg, today)
+        return DayInsight.weekText(r, f?.let { DayInsight.factorLine(it.first, it.second) })
+    }
+
     fun handle(ctx: Context, intent: Intent) {
         val prefs = Prefs(ctx)
         I18n.init(prefs)
@@ -135,9 +183,29 @@ object Reminders {
                 else if (!prefs.reminderOnlyIfEmpty) show(ctx, CH_REMIND, 1, "Tabita", t("День записан. Загляните в итоги месяца, если интересно."))
                 scheduleAll(ctx)
             }
+            "week" -> {
+                runCatching { weekText(Repo(ctx), prefs, LocalDate.now()) }.onFailure { Log.e("Remind", "обзор недели", it) }.getOrNull()
+                    ?.let { show(ctx, CH_REMIND, 5, t("Ваша неделя"), it) }
+                scheduleAll(ctx)
+            }
             "motiv" -> {
                 val text = intent.getStringExtra("text") ?: prefs.motivations.randomOrNull() ?: return
                 show(ctx, CH_MOTIV, 2 + Random.nextInt(1000), t("Мотивация"), text)
+            }
+            "wind", "bed" -> {
+                Alarms.refresh(ctx)
+                val repo = Repo(ctx)
+                val now = LocalDateTime.now()
+                // время отбоя на эту ночь (уведомление «пора спать» могло прийти на пару минут позже)
+                val (bed, r) = bedtimeAt(repo, prefs, now.minusMinutes(if (intent.action == "bed") 30 else 0))
+                val wake = clockOf(r.nextWake)
+                val sleepH = formatNumber(Math.round((r.need - 15) / 6.0) / 10.0)
+                if (intent.action == "wind") show(ctx, CH_SLEEP, 3, t("Через %d мин — отбой в %s", prefs.bedLead, clockOf(bed.hour * 60 + bed.minute)),
+                    t("Приглушите свет, отложите экраны и работу — так проще уснуть. Подъём в %s.", wake) +
+                        (if (!r.alarm) " " + t("Будильник на завтра не стоит.") else ""))
+                else show(ctx, CH_SLEEP, 4, t("Пора спать"),
+                    t("Чтобы спать %s ч до подъёма в %s.", sleepH, wake) + (if (!r.alarm) " " + t("Будильник на завтра не стоит — поставьте на %s.", wake) else ""))
+                scheduleAll(ctx)
             }
             "plan", Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED,
             "android.intent.action.TIME_SET", "android.intent.action.TIMEZONE_CHANGED" -> scheduleAll(ctx)

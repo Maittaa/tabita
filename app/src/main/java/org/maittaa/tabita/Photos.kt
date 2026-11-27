@@ -40,6 +40,26 @@ object Photos {
         }.getOrNull()
     }
 
+    /**
+     * 5.45: когда снято фото — EXIF DateTimeOriginal/DateTime оригинала (часовой пояс телефона).
+     * При сохранении в приложение снимок пересжимается и EXIF теряется, поэтому читаем до импорта.
+     */
+    suspend fun takenAt(ctx: Context, uri: Uri): Long? = withContext(Dispatchers.IO) {
+        runCatching {
+            ctx.contentResolver.openInputStream(uri)?.use { s ->
+                val ex = android.media.ExifInterface(s)
+                val v = ex.getAttribute(android.media.ExifInterface.TAG_DATETIME_ORIGINAL) ?: ex.getAttribute(android.media.ExifInterface.TAG_DATETIME)
+                v?.let { parseExif(it) }
+            }
+        }.getOrNull()
+    }
+
+    /** «2026:11:22 13:05:41» → мс в часовом поясе телефона. */
+    fun parseExif(v: String): Long? = runCatching {
+        java.time.LocalDateTime.parse(v.trim(), java.time.format.DateTimeFormatter.ofPattern("yyyy:MM:dd HH:mm:ss"))
+            .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+    }.getOrNull()
+
     fun decode(file: File, maxSide: Int): Bitmap? = runCatching {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, o)

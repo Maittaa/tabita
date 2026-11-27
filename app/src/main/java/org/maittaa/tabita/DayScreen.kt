@@ -25,6 +25,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
@@ -59,6 +69,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -86,6 +97,9 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
     val layout = collect(repo.layout)
     val groups = collect(repo.groups)
     val tiles = repo.tiles(template, layout, groups)
+    // правки раскладки — всегда от актуального состояния в Repo, а не от снимка последней перерисовки:
+    // иначе два шага перетаскивания за один кадр затирают друг друга и плитка «прыгает назад» (5.22.4)
+    fun freshTiles() = repo.tiles(repo.template.value, repo.layout.value, repo.groups.value)
     var editing by remember { mutableStateOf(false) }
     var sel by remember { mutableStateOf<String?>(null) }
     var popup by remember { mutableStateOf<String?>(null) }
@@ -98,16 +112,22 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
     fun FullTile(id: String) {
         groups.firstOrNull { it.id == id }?.let { g ->
             SectionCard(g.displayName) {
-                ChecksRow(groupChecks(repo, template, g.id), day) { cid, v -> repo.setValue(dateStr, cid, v) }
+                ChecksRow(groupChecks(repo, template, g.id), day, sections = act.prefs.checkSections) { cid, v -> repo.setValue(dateStr, cid, v) }
             }
             return
         }
         val item = template.firstOrNull { it.id == id } ?: return
+        // 5.39: данные с часов и весов — подсказка, если источник не подключён
+        Column(Modifier.fillMaxWidth()) {
         when (item.type) {
             ItemType.MEALS -> MealsBlock(act, item, dateStr, day[item.id], notify)
             ItemType.EXPENSES -> FinanceBlock(repo, item, dateStr, day[item.id])
-            ItemType.WATER -> WaterBlock(repo, item, dateStr, day)
+            ItemType.WATER -> WaterBlock(repo, act.prefs, item, dateStr, day)
             ItemType.WELLBEING -> WellbeingTileCard(item, wbStatus(repo, act.prefs, dateStr)) { act.wbStart.value = true }
+            ItemType.TIPS -> TipsBlock(repo, act.prefs, item, date) { act.openSettings.value = "ref_rhythm" }
+            ItemType.GOAL -> GoalBlock(act, item, dateStr)
+            ItemType.RHYTHM -> RhythmBlock(repo, act.prefs, item, date) { act.openSettings.value = "ref_rhythm" }
+            ItemType.TRAINING -> org.maittaa.tabita.train.TrainDayBlock(act.train, item.displayName, date) { act.openTrain.value = true }
             ItemType.BODY -> BodyBlock(repo, item, dateStr, day[item.id], manual = day[manualKey(item.id)] != null, srcValue = day[srcKey(item.id)],
                 onRevert = { scope.launch { act.syncOpenScale(date.minusDays(1)) } })
             else -> if (item.source == Source.HC_EXERCISE) WorkoutBlock(item, day, act.prefs.countWalking,
@@ -131,18 +151,34 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
                     if (item.source == Source.HC_RESTING_HR && (day[srcKey(item.id)] == null || day[manualKey(item.id)] != null)) RestingHrHint()
                 } else {
                     key(item.id + dateStr) {
-                        ItemEditor(item, day[item.id], onAddOption = { repo.addOption(item.id, it) }) { repo.setValue(dateStr, item.id, it) }
+                        ItemEditor(item, day[item.id], onAddOption = { repo.addOption(item.id, it) }, sections = act.prefs.checkSections) { repo.setValue(dateStr, item.id, it) }
                     }
                 }
             }
+        }
+        if (item.source != Source.NONE || item.type == ItemType.BODY) SourceHint(act, item)
         }
     }
 
     /** Краткое содержимое уменьшенной плитки. */
     @Composable
     fun CompactTile(id: String, w: Int, h: Int) {
-        val s = tileSummary(repo, template, id, day, dateStr, act.prefs)
-        CompactTileView(s, w, h)
+        if (template.any { it.id == id && it.type == ItemType.TIPS }) {
+            // советы сменяются с интервалом из настроек плитки; раз в 5 минут — пересчёт под текущее время
+            val tick = rememberTick(act.prefs.tipsEvery * 1000L)
+            val slow = rememberTick(300_000)
+            val s = remember(tick, slow, day, template, dateStr) { tileSummary(repo, template, id, day, dateStr, act.prefs, tick) }
+            androidx.compose.animation.Crossfade(s, label = "tipTile") { CompactTileView(it, w, h) }
+        } else if (template.any { it.id == id && it.type == ItemType.RHYTHM } && date == LocalDate.now()) {
+            // 5.43: ритм — картинкой (круг или полоса), обновляется раз в минуту
+            val minute = rememberTick(60_000)
+            val now = remember(minute) { java.time.LocalTime.now() }
+            val r = remember(minute, entries) { DayRhythm.of(repo, date, act.prefs) }
+            val name = template.first { it.id == id }.displayName
+            val plan = remember(minute, entries) { runCatching { DayPlan.of(repo, act.prefs, date, r) }.getOrNull() }
+            RhythmCompact(name, r, now, w, h, act.prefs.rhythmView != "chart", plan)
+        } else CompactTileView(tileSummary(repo, template, id, day, dateStr, act.prefs, train = act.train)
+            .copy(actions = if (editing) emptyList() else quickActions(act, repo, template, id, day, dateStr)), w, h)
     }
 
     Column(modifier.fillMaxSize().imePadding()) {
@@ -171,7 +207,43 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
         }
 
         val monthCfg = remember { act.prefs.monthCfg }
-        if (!editing) DayProgressLine(template, entries, monthCfg, date) { popup = it }
+        var copyAsk by remember { mutableStateOf<List<DayCopy.Candidate>?>(null) }
+        val finding = remember(date, template) {
+            if (date != LocalDate.now()) null else runCatching { DayInsight.freshFinding(act.prefs, template, entries, date) }.getOrNull()
+        }
+        val covered = remember(template) { DayInsight.coveredByTips(template, act.prefs) }
+        // 5.64: «Как вчера» — что перенести, с галочками; ничего не пишется без «Отметить»
+        copyAsk?.let { list ->
+            var pick by remember(list) { mutableStateOf(list.map { it.item.id }.toSet()) }
+            AlertDialog(
+                onDismissRequest = { copyAsk = null },
+                title = { Text(t("Отметить как вчера?")) },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        Text(t("Сегодня пока пусто, вчера было:"), style = MaterialTheme.typography.bodySmall)
+                        list.forEach { c ->
+                            Row(Modifier.fillMaxWidth().clickable { pick = if (c.item.id in pick) pick - c.item.id else pick + c.item.id }.testTag("copy_${c.item.id}"),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.Checkbox(c.item.id in pick, null)
+                                Text(c.text, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton({ DayCopy.apply(repo, date, list.filter { it.item.id in pick }); copyAsk = null
+                    notify(t("Отмечено как вчера: %d", pick.size)) }, enabled = pick.isNotEmpty(), modifier = Modifier.testTag("copy_ok")) { Text(t("Отметить")) } },
+                dismissButton = { TextButton({ copyAsk = null }) { Text(t("Отмена")) } },
+            )
+        }
+        // 5.43: тонкая полоса ритма над плитками (Ещё → Ритм дня)
+        var rhythmDlg by remember { mutableStateOf(false) }
+        if (!editing && act.prefs.rhythmStrip && date == LocalDate.now()) {
+            val minute = rememberTick(60_000)
+            val now = remember(minute) { java.time.LocalTime.now() }
+            val r = remember(minute, entries) { DayRhythm.of(repo, date, act.prefs) }
+            RhythmStrip(r, now) { rhythmDlg = true }
+        }
+        if (rhythmDlg) RhythmDialog(repo, act.prefs, { act.openSettings.value = "ref_rhythm" }) { rhythmDlg = false }
 
         // подсказка режима правки закреплена над плитками
         androidx.compose.animation.AnimatedVisibility(editing) {
@@ -184,25 +256,36 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
                     if (groups.any { it.id == id }) groupChecks(repo, template, id).forEach { repo.upsertItem(it.copy(hidden = true)) }
                     sel = null
                 },
-                onReset = { id -> repo.setLayout(tiles.map { if (it.id == id) Repo.Tile(id) else it }) },
+                onReset = { id -> repo.setLayout(freshTiles().map { if (it.id == id) Repo.Tile(id) else it }) },
                 onDone = { editing = false; sel = null; Log.d("Day", "раскладка: $tiles") },
-                size = sel?.let { id -> tiles.firstOrNull { it.id == id }?.size },
-                onSize = { ts -> sel?.let { id -> repo.setLayout(tiles.map { if (it.id == id) ts.tile(id) else it }); Log.d("Day", "плитка $id → $ts") } },
+                tile = sel?.let { id -> tiles.firstOrNull { it.id == id } },
+                cols = act.prefs.gridCols,
+                onTile = { nt -> repo.setLayout(freshTiles().map { if (it.id == nt.id) nt else it }); Log.d("Day", "плитка ${nt.id} → ${nt.w}×${nt.h} ${if (nt.small) "" else "полная"}") },
             )
             }
         }
         val scroll = rememberScrollState()
+        // 5.36: подсказки после знакомства — без перехвата экрана, закрываются сами при первом действии
+        var tileHint by remember { mutableStateOf(act.prefs.tileHint) }
+        var btnHint by remember { mutableStateOf(act.prefs.tileBtnHint) }
+        fun doneTileHint() { if (tileHint) { tileHint = false; act.prefs.tileHint = false; Log.d("Day", "подсказка плиток закрыта") } }
+        fun doneBtnHint() { if (btnHint) { btnHint = false; act.prefs.tileBtnHint = false } }
         Box(Modifier.weight(1f)) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(vertical = 0.dp)) {
+            // 5.66: строка прогресса прокручивается вместе с плитками, а не висит над ними
+            if (!editing) DayProgressLine(template, entries, monthCfg, date, onOpen = { popup = it }, onCopy = { copyAsk = it }, finding = finding,
+                covered = covered)
             TileGrid(
-                tiles = tiles, editing = editing, selected = sel,
+                tiles = tiles, cols = act.prefs.gridCols, editing = editing, selected = sel,
                 onSelect = { sel = it },
-                onStartEdit = { editing = true; sel = it },
-                onMove = { id, to ->
-                    val l = tiles.toMutableList(); val from = l.indexOfFirst { it.id == id }
-                    if (from >= 0 && from != to) { val t0 = l.removeAt(from); l.add(to.coerceIn(0, l.size), t0); repo.setLayout(l) }
+                onStartEdit = { editing = true; sel = it; doneTileHint() },
+                hintId = if (tileHint && !editing) tiles.firstOrNull { it.size == TileSize.HALF }?.id ?: tiles.firstOrNull()?.id else null,
+                onMove = { id, target ->
+                    val l = freshTiles().toMutableList()
+                    val from = l.indexOfFirst { it.id == id }; val to = l.indexOfFirst { it.id == target }
+                    if (from >= 0 && to >= 0 && from != to) { val t0 = l.removeAt(from); l.add(to.coerceIn(0, l.size), t0); repo.setLayout(l) }
                 },
-                onResize = { id, w, h, small -> repo.setLayout(tiles.map { if (it.id == id) Repo.Tile(id, w, h, small) else it }) },
+                onResize = { id, w, h, small -> repo.setLayout(freshTiles().map { if (it.id == id) Repo.Tile(id, w, h, small) else it }) },
                 onOpen = { id ->
                     // плитка чекапа — сразу к тесту
                     if (template.any { it.id == id && it.type == ItemType.WELLBEING }) act.wbStart.value = true
@@ -222,13 +305,20 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
                 )
                 TextButton(onClick = { scope.launch { act.syncHealth(date.minusDays(1), date) } }) { Text(t("Обновить")) }
             }
+            if (btnHint) Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.Top) {
+                Icon(Icons.Filled.Info, null, Modifier.size(18.dp).padding(top = 2.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text(t("Подробно: «+ Пункт» — новый показатель, «Все пункты» — названия, порядок, цели и скрытые, «Плитки» — размеры и раскладка."),
+                    Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                IconButton({ doneBtnHint() }, Modifier.size(28.dp)) { Icon(Icons.Filled.Close, t("Закрыть"), Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary) }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 val pad = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 8.dp)
-                androidx.compose.material3.Button(onClick = { newItem = true }, Modifier.weight(1f), contentPadding = pad) {
+                androidx.compose.material3.Button(onClick = { newItem = true; doneBtnHint() }, Modifier.weight(1f), contentPadding = pad) {
                     Icon(Icons.Filled.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text(t("Пункт"), maxLines = 1)
                 }
-                OutlinedButton(onClick = { allItems = true }, Modifier.weight(1f), contentPadding = pad) { Text(t("Все пункты"), maxLines = 1) }
-                OutlinedButton(onClick = { editing = !editing; sel = null }, Modifier.weight(1f), contentPadding = pad) {
+                OutlinedButton(onClick = { allItems = true; doneBtnHint() }, Modifier.weight(1f), contentPadding = pad) { Text(t("Все пункты"), maxLines = 1) }
+                OutlinedButton(onClick = { editing = !editing; sel = null; doneBtnHint(); doneTileHint() }, Modifier.weight(1f), contentPadding = pad) {
                     Text(if (editing) t("Готово") else t("Плитки"), maxLines = 1)
                 }
             }
@@ -236,6 +326,12 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
             }
         }
         VerticalScrollbar(scroll, Modifier.align(Alignment.CenterEnd))
+        // подсказка про жесты — плашка снизу, как подсказки Pixel; экран под ней остаётся рабочим
+        androidx.compose.animation.AnimatedVisibility(tileHint && !editing && date == LocalDate.now(), Modifier.align(Alignment.BottomCenter),
+            enter = androidx.compose.animation.slideInVertically { it } + androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.slideOutVertically { it } + androidx.compose.animation.fadeOut()) {
+            TileGestureHint { doneTileHint() }
+        }
         }
     }
 
@@ -265,13 +361,19 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
         act.prefs.monthCfg = cfg; Log.i("Day", "влияние на индекс: $m")
     }
     val onNewGroup: (String, GroupKind) -> Group = { n, k -> repo.addGroup(n, k) }
-    if (newItem) ItemDialog(TemplateItem(name = "", type = ItemType.CHECK), true, groups = groups,
+    if (newItem) ItemDialog(TemplateItem(name = "", type = ItemType.CHECK), true, groups = groups, sections = checkSections(template),
+        sectionsOn = act.prefs.checkSections, onSectionsOn = { act.prefs.checkSections = it },
         canAddWellbeing = template.none { it.type == ItemType.WELLBEING },
+        canAddTips = template.none { it.type == ItemType.TIPS },
+        canAddTraining = template.none { it.type == ItemType.TRAINING },
+        canAddGoal = template.none { it.type == ItemType.GOAL },
+        canAddRhythm = template.none { it.type == ItemType.RHYTHM },
         onNewGroup = onNewGroup, effectOf = effectOf, onEffects = onEffects,
         onSave = { repo.upsertItem(it); newItem = false; Log.i("Day", "новый пункт ${it.name} (${it.type})") },
         onDelete = {}, onDismiss = { newItem = false })
     editItem?.let { item ->
-        ItemDialog(item, false, groups = groups, onNewGroup = onNewGroup, effectOf = effectOf, onEffects = onEffects,
+        ItemDialog(item, false, groups = groups, sections = checkSections(template),
+            sectionsOn = act.prefs.checkSections, onSectionsOn = { act.prefs.checkSections = it }, onNewGroup = onNewGroup, effectOf = effectOf, onEffects = onEffects,
             onSave = { repo.upsertItem(it); editItem = null },
             onDelete = { repo.deleteItem(item.id); editItem = null; sel = null },
             onDismiss = { editItem = null })
@@ -284,28 +386,13 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
                     Text(t("Все пункты"), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(start = 8.dp))
                     IconButton(onClick = { allItems = false }) { Icon(Icons.Filled.Close, t("Закрыть")) }
                 }
-                TemplateScreen(repo, Modifier.weight(1f), effectOf, onEffects)
+                TemplateScreen(repo, Modifier.weight(1f), effectOf, onEffects, act.prefs)
             }
         }
     }
 
-    if (pickDate) {
-        val st = rememberDatePickerState(
-            initialSelectedDateMillis = date.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
-        )
-        DatePickerDialog(
-            onDismissRequest = { pickDate = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    st.selectedDateMillis?.let {
-                        val d = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()
-                        dateStr = minOf(d, LocalDate.now()).key()
-                    }
-                    pickDate = false
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { pickDate = false }) { Text(t("Отмена")) } },
-        ) { DatePicker(st) }
+    if (pickDate) DayCalendarDialog(date, template, entries, act.prefs.monthCfg, onDismiss = { pickDate = false }) { d ->
+        dateStr = minOf(d, LocalDate.now()).key(); pickDate = false
     }
 }
 
@@ -383,7 +470,35 @@ fun SectionCard(title: String, watch: Boolean = false, action: (@Composable () -
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ChecksRow(items: List<TemplateItem>, day: Map<String, String>, onSet: (String, String?) -> Unit) {
+fun ChecksRow(items: List<TemplateItem>, day: Map<String, String>, sections: Boolean = true, onSet: (String, String?) -> Unit) {
+    // 5.59.1: разделы — подзаголовками; без раздела — сверху. 5.59.2: разделы можно выключить — одна куча
+    val bySection = if (!sections) listOf("" to items) else items.groupBy { it.section.trim() }.toList().sortedBy { if (it.first.isEmpty()) 0 else 1 }
+    if (bySection.size > 1 || bySection.firstOrNull()?.first?.isNotEmpty() == true) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            bySection.forEach { (sec, list) ->
+                if (sec.isNotEmpty()) Text(sec, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp).testTag("sec_$sec"))
+                ChipsFlow(list, day, onSet)
+            }
+        }
+    } else ChipsFlow(items, day, onSet)
+    if (items.any { it.plusAllowed }) {
+        Text(
+            t("Повторное нажатие ставит «+»"),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+/** Разделы отметок, которые уже есть в шаблоне. */
+fun checkSections(template: List<TemplateItem>): List<String> =
+    template.filter { it.type == ItemType.CHECK }.map { it.section.trim() }.filter { it.isNotEmpty() }.distinct()
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChipsFlow(items: List<TemplateItem>, day: Map<String, String>, onSet: (String, String?) -> Unit) {
     // плотнее: без 48dp «зоны касания» вокруг каждого чипа
     androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalMinimumInteractiveComponentSize provides 0.dp) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -409,21 +524,13 @@ fun ChecksRow(items: List<TemplateItem>, day: Map<String, String>, onSet: (Strin
         }
     }
     }
-    if (items.any { it.plusAllowed }) {
-        Text(
-            t("Повторное нажатие ставит «+»"),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ItemEditor(item: TemplateItem, value: String?, onAddOption: (String) -> Unit, onChange: (String?) -> Unit) {
+fun ItemEditor(item: TemplateItem, value: String?, onAddOption: (String) -> Unit, sections: Boolean = true, onChange: (String?) -> Unit) {
     when (item.type) {
-        ItemType.WELLBEING -> {}
+        ItemType.WELLBEING, ItemType.TIPS, ItemType.TRAINING, ItemType.GOAL, ItemType.RHYTHM -> {}
         ItemType.CHECK -> ChecksRow(listOf(item), if (value != null) mapOf(item.id to value) else emptyMap()) { _, v -> onChange(v) }
 
         ItemType.SCALE -> {
@@ -484,8 +591,16 @@ fun ItemEditor(item: TemplateItem, value: String?, onAddOption: (String) -> Unit
             val counts = parseCounts(value)
             var adding by remember { mutableStateOf(false) }
             val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+            // 5.61: разделы вариантов — подзаголовками (если включены); «Добавить» — в конце
+            val all = item.options + (counts.keys - item.options.toSet())
+            val groups = if (!sections) listOf("" to all)
+                else all.groupBy { item.optMeta[it]?.section?.trim().orEmpty() }.toList().sortedBy { if (it.first.isEmpty()) 0 else 1 }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            groups.forEachIndexed { gi, (sec, list) ->
+            if (sec.isNotEmpty()) Text(sec, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 4.dp).testTag("osec_$sec"))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                (item.options + (counts.keys - item.options.toSet())).forEach { opt ->
+                list.forEach { opt ->
                     val n = counts[opt] ?: 0
                     CounterChip(
                         label = t(opt), count = n, showCount = item.counter,
@@ -504,7 +619,24 @@ fun ItemEditor(item: TemplateItem, value: String?, onAddOption: (String) -> Unit
                         },
                     )
                 }
-                AssistChip(onClick = { adding = true }, label = { Text(t("Добавить")) }, leadingIcon = { Icon(Icons.Filled.Add, null) })
+                // 5.49: того же размера и вида, что и варианты, — не «висит» отдельно
+                if (gi == groups.size - 1) androidx.compose.material3.Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), color = androidx.compose.ui.graphics.Color.Transparent,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.height(32.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).clickable { adding = true },
+                ) {
+                    Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(4.dp))
+                        Text(t("Добавить"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            }
+            }
+            item.dailyMissing(value).takeIf { it.isNotEmpty() }?.let { miss ->
+                Text(t("Каждый день, ещё не отмечено: %s", miss.joinToString(", ") { t(it) }), style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.padding(top = 4.dp).testTag("daily_missing"))
             }
             if (item.counter) Text(
                 t("Нажатие — +1, удержание — сброс"),
@@ -592,6 +724,125 @@ fun CounterChip(label: String, count: Int, showCount: Boolean, onClick: () -> Un
             if (on && showCount) {
                 Spacer(Modifier.width(6.dp))
                 androidx.compose.material3.Badge(containerColor = MaterialTheme.colorScheme.primary) { Text("$count") }
+            }
+        }
+    }
+}
+
+
+/**
+ * Плитка «Цель» (5.31): цель из «Программы» и главное на сегодня под неё — у похудения лимит калорий,
+ * у набора — что добрать, у самочувствия — сон, шаги и вода. Нажатие — «Программа → План».
+ */
+@Composable
+fun GoalBlock(act: MainActivity, item: TemplateItem, date: String) {
+    val prefs = act.prefs; val repo = act.repo
+    val entries = collect(repo.entries); val profile = collect(repo.profile)
+    val goal = Goal.of(prefs.planGoal)
+    val cs = MaterialTheme.colorScheme
+    SectionCard(item.displayName, action = {
+        androidx.compose.material3.TextButton({ act.openProgram.value = PSUB_PLAN }) { Text(t("Программа")); Icon(Icons.Filled.ChevronRight, null, Modifier.size(18.dp)) }
+    }) {
+        if (goal == null) {
+            Text(t("Цель не выбрана. Выберите её в «Программе» — здесь появится главное на день: калории, белок или сон и шаги — в зависимости от цели."),
+                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            return@SectionCard
+        }
+        val d = LocalDate.parse(date)
+        val tl = remember(entries, profile, goal, date) { Program.today(goal, repo, prefs, d) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Flag, null, Modifier.size(20.dp), tint = cs.primary)
+            Spacer(Modifier.width(8.dp))
+            Text(goal.title, style = MaterialTheme.typography.titleMedium, color = cs.primary)
+        }
+        if (tl == null) { Text(t("нужен вес для расчёта"), style = MaterialTheme.typography.bodySmall, color = cs.error); return@SectionCard }
+        Text(tl.value, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 4.dp),
+            color = if (tl.alert) cs.error else cs.onSurface)
+        tl.rows.forEach { (k, v, ok) ->
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                Text(k, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                Text(v + when (ok) { true -> " ✓"; false -> " ↓"; null -> "" }, style = MaterialTheme.typography.bodySmall,
+                    color = if (ok == false) cs.error else cs.onSurface)
+            }
+        }
+        tl.sub?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp)) }
+    }
+}
+
+
+/**
+ * Подсказка про жесты плиток (5.36): маленькая плашка снизу с анимированным «пальцем» —
+ * зажать, потянуть, растянуть за уголок. Ничего не блокирует; исчезает при первом зажатии плитки или по ✕.
+ */
+@Composable
+fun TileGestureHint(onClose: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val inf = androidx.compose.animation.core.rememberInfiniteTransition(label = "hint")
+    // цикл 2,4 с: палец опускается (нажатие), держит, ведёт вбок, отпускает
+    val t by inf.animateFloat(0f, 1f, androidx.compose.animation.core.infiniteRepeatable(
+        androidx.compose.animation.core.tween(2400, easing = androidx.compose.animation.core.LinearEasing)), label = "t")
+    val press = when { t < 0.15f -> t / 0.15f; t < 0.75f -> 1f; t < 0.85f -> 1f - (t - 0.75f) / 0.1f; else -> 0f }
+    val slide = when { t < 0.35f -> 0f; t < 0.7f -> (t - 0.35f) / 0.35f; t < 0.85f -> 1f; else -> 1f - (t - 0.85f) / 0.15f }
+    androidx.compose.material3.Surface(
+        Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp), color = cs.secondaryContainer, tonalElevation = 3.dp, shadowElevation = 6.dp,
+    ) {
+        Row(Modifier.padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(width = 64.dp, height = 44.dp)) {
+                // «плитка», которую тянут
+                Box(Modifier.offset(x = (6 + 18 * slide).dp, y = 6.dp).size(30.dp, 22.dp)
+                    .graphicsLayer { scaleX = 1f + 0.08f * press; scaleY = 1f + 0.08f * press }
+                    .background(cs.primary.copy(alpha = 0.25f + 0.35f * press), androidx.compose.foundation.shape.RoundedCornerShape(6.dp)))
+                // круг нажатия и палец
+                Box(Modifier.offset(x = (16 + 18 * slide).dp, y = 12.dp).size(18.dp)
+                    .graphicsLayer { alpha = press * 0.5f; scaleX = 0.6f + press; scaleY = 0.6f + press }
+                    .background(cs.primary, androidx.compose.foundation.shape.CircleShape))
+                Icon(Icons.Filled.TouchApp, null, Modifier.offset(x = (14 + 18 * slide).dp, y = (14 - 4 * press).dp).size(26.dp), tint = cs.onSecondaryContainer)
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t("Плитки можно двигать"), style = MaterialTheme.typography.titleSmall, color = cs.onSecondaryContainer)
+                Text(t("Зажмите и тяните — поменяет место. Потяните за уголок — станет больше или меньше."),
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSecondaryContainer)
+            }
+            IconButton(onClose) { Icon(Icons.Filled.Close, t("Закрыть"), tint = cs.onSecondaryContainer) }
+        }
+    }
+}
+
+
+/**
+ * Подсказка на плитке с данными из Health Connect / openScale (5.39): пока источник не подключён — что будет,
+ * когда подключить (собирается само: встать на весы, спать с часами), и кнопки прямо в нужные настройки.
+ */
+@Composable
+fun SourceHint(act: MainActivity, item: TemplateItem) {
+    val hc = collect(act.hcConnected)
+    val body = item.type == ItemType.BODY || item.source == Source.OPENSCALE
+    val osOff = !act.prefs.osReady
+    val show = if (body) osOff && hc != true else hc == false
+    if (!show) return
+    val cs = MaterialTheme.colorScheme
+    val what = when {
+        body -> t("Подключите весы — вес, жир, мышцы, вода и ещё десяток показателей будут записываться сами: только встаньте на весы утром.")
+        item.source == Source.HC_WEIGHT -> t("Подключите Health Connect — вес будет записываться сам: только встаньте на весы. Состав тела — через openScale.")
+        item.source == Source.HC_SLEEP -> t("Подключите Health Connect — сон с фазами будет записываться сам: только спите с часами или браслетом.")
+        item.source == Source.HC_STEPS -> t("Подключите Health Connect — шаги будут подтягиваться с часов или телефона сами.")
+        item.source == Source.HC_RESTING_HR -> t("Подключите Health Connect — пульс покоя будет подтягиваться с часов сам.")
+        item.source == Source.HC_EXERCISE -> t("Подключите Health Connect — тренировки с часов будут записываться сами, с видами и минутами.")
+        else -> t("Подключите Health Connect — данные будут собираться сами.")
+    }
+    Surface(color = cs.tertiaryContainer, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(Icons.Filled.Info, null, Modifier.size(18.dp).padding(top = 2.dp), tint = cs.onTertiaryContainer)
+                Spacer(Modifier.width(8.dp))
+                Text(what, style = MaterialTheme.typography.bodySmall, color = cs.onTertiaryContainer)
+            }
+            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+            androidx.compose.foundation.layout.FlowRow(Modifier.padding(start = 22.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (!body || hc == false) androidx.compose.material3.TextButton({ act.openSettings.value = "hc" }) { Text(t("Health Connect"), color = cs.onTertiaryContainer, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
+                if (body || item.source == Source.HC_WEIGHT) androidx.compose.material3.TextButton({ act.openSettings.value = "os" }) { Text(t("openScale"), color = cs.onTertiaryContainer, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
             }
         }
     }

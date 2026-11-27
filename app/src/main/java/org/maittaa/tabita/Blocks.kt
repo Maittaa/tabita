@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.platform.testTag
+import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.BookmarkAdded
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -50,6 +55,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -80,6 +86,191 @@ fun numStr(d: Double) = d.toString().removeSuffix(".0")
 
 fun mealKcal(list: List<Meal>) = list.mapNotNull { it.kcal }.takeIf { it.isNotEmpty() }?.sum()
 
+/** Сумма БЖУ за день (5.19.2); null — ни у одного приёма не указаны. */
+data class Macros(val protein: Double, val fat: Double, val carbs: Double) {
+    fun short() = "${t("Б")} ${formatNumber(Math.round(protein).toDouble())} · ${t("Ж")} ${formatNumber(Math.round(fat).toDouble())} · ${t("У")} ${formatNumber(Math.round(carbs).toDouble())}"
+}
+fun mealMacros(list: List<Meal>): Macros? =
+    if (list.none { it.protein != null || it.fat != null || it.carbs != null }) null
+    else Macros(list.sumOf { it.protein ?: 0.0 }, list.sumOf { it.fat ?: 0.0 }, list.sumOf { it.carbs ?: 0.0 })
+
+/**
+ * Нормы на день (5.19.3). Калории — оценка расхода за день по профилю (Anthro.energyOn).
+ * Белок — 1,6–2 г на кг веса (рост мышц; общая норма для взрослых — от 0,8). Жиры 20–35 %, углеводы 45–65 % калорий.
+ * Без веса белок — 10–35 % калорий; без профиля граммы жиров и углеводов не считаются, только доли.
+ */
+data class DayNorms(val kcal: Double?, val protein: ClosedFloatingPointRange<Double>?, val fat: ClosedFloatingPointRange<Double>?, val carbs: ClosedFloatingPointRange<Double>?) {
+    companion object {
+        const val P_LO = 1.6; const val P_HI = 2.0
+        val FAT_PCT = 20.0..35.0; val CARB_PCT = 45.0..65.0; val PROT_PCT = 10.0..35.0
+        fun of(kcal: Double?, weight: Double?) = DayNorms(
+            kcal,
+            weight?.let { (it * P_LO)..(it * P_HI) } ?: kcal?.let { (it * PROT_PCT.start / 400)..(it * PROT_PCT.endInclusive / 400) },
+            kcal?.let { (it * FAT_PCT.start / 900)..(it * FAT_PCT.endInclusive / 900) },
+            kcal?.let { (it * CARB_PCT.start / 400)..(it * CARB_PCT.endInclusive / 400) },
+        )
+    }
+}
+
+/** Итог БЖУ за день в блоке «Питание»: граммы, доля калорий, нормы и белок на кг веса. */
+@Composable
+fun DayMacros(repo: Repo, date: String, meals: List<Meal>) {
+    val m = mealMacros(meals) ?: return
+    val macroKcal = 4 * m.protein + 9 * m.fat + 4 * m.carbs
+    val eaten = mealKcal(meals) ?: macroKcal
+    val profile = collect(repo.profile)
+    val day = java.time.LocalDate.parse(date)
+    val w = remember(date, repo.entries.value) { Anthro.weightOn(repo.template.value, repo.entries.value, day) }
+    val burn = remember(date, repo.entries.value, profile) { Anthro.energyOn(profile, repo.template.value, repo.entries.value, day)?.total }
+    val norms = DayNorms.of(burn, w)
+    val on = MaterialTheme.colorScheme.onSecondaryContainer
+    fun g(v: Double) = formatNumber(Math.round(v).toDouble())
+    /** Пометка к норме: ✓ в норме, ↓ мало, ↑ много (с запасом 10 %). */
+    fun mark(v: Double, r: ClosedFloatingPointRange<Double>?) = when {
+        r == null -> ""
+        v < r.start -> " ↓"
+        v > r.endInclusive * 1.1 -> " ↑"
+        else -> " ✓"
+    }
+    var open by remember { mutableStateOf(false) }
+    val sum = listOf(t("Б") to (m.protein to norms.protein), t("Ж") to (m.fat to norms.fat), t("У") to (m.carbs to norms.carbs))
+    // компактно: две строки, подробности — по нажатию
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().clickable { open = true }) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    t("БЖУ за день") + if (norms.kcal != null) " · " + t("%s из ≈ %s ккал", g(eaten), g(norms.kcal)) +
+                        mark(eaten, (norms.kcal * 0.9)..(norms.kcal * 1.05)) else "",
+                    style = MaterialTheme.typography.labelMedium, color = on,
+                )
+                Text(
+                    sum.joinToString("   ") { (k, v) -> "$k ${g(v.first)}" + (v.second?.let { r -> mark(v.first, r) } ?: "") } + "  " + t("г"),
+                    style = MaterialTheme.typography.titleSmall, color = on, maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+            Icon(Icons.Filled.ChevronRight, t("Подробнее"), tint = on)
+        }
+    }
+    if (open) AlertDialog(
+        onDismissRequest = { open = false },
+        confirmButton = { TextButton({ open = false }) { Text(t("Закрыть")) } },
+        title = { Text(t("БЖУ за день")) },
+        text = {
+            val cs = MaterialTheme.colorScheme
+            /** Строка таблицы: показатель (и подпись под ним) | съедено | норма | пометка — каждое в своей колонке, без переносов. */
+            @Composable
+            fun TRow(name: String, sub: String?, value: String, norm: String, mk: String, head: Boolean = false) {
+                val st = if (head) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodyMedium
+                val col = if (head) cs.onSurfaceVariant else cs.onSurface
+                Row(Modifier.fillMaxWidth().padding(vertical = if (head) 0.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1.15f)) {
+                        Text(name, style = st, color = col, maxLines = 1, softWrap = false)
+                        if (sub != null) Text(sub, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                    Text(value, Modifier.weight(0.9f), style = if (head) st else MaterialTheme.typography.titleSmall, color = col,
+                        maxLines = 1, softWrap = false, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                    Text(norm, Modifier.weight(1.1f), style = if (head) st else MaterialTheme.typography.bodySmall, color = if (head) col else cs.onSurfaceVariant,
+                        maxLines = 1, softWrap = false, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                    Text(mk.trim(), Modifier.width(22.dp), style = st, color = col, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                }
+            }
+            fun share(grams: Double, k: Double) = if (macroKcal > 0) t("%d%% калорий", Math.round(grams * k / macroKcal * 100).toInt()) else null
+            fun range(r: ClosedFloatingPointRange<Double>, unit: String) = "${g(r.start)}–${g(r.endInclusive)}$unit"
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                TRow("", null, t("съедено"), t("норма"), "", head = true)
+                if (norms.kcal != null) TRow(t("Калории"), t("расход за день"), g(eaten), "≈ " + g(norms.kcal), mark(eaten, (norms.kcal * 0.9)..(norms.kcal * 1.05)))
+                else TRow(t("Калории"), null, g(eaten), "—", "")
+                listOf(
+                    Triple(t("Белки"), m.protein, 4.0) to (norms.protein to null),
+                    Triple(t("Жиры"), m.fat, 9.0) to (norms.fat to DayNorms.FAT_PCT),
+                    Triple(t("Углеводы"), m.carbs, 4.0) to (norms.carbs to DayNorms.CARB_PCT),
+                ).forEach { (v, nr) ->
+                    val (name, grams, k) = v
+                    val (r, pct) = nr
+                    val sh = if (macroKcal > 0) grams * k / macroKcal * 100 else 0.0
+                    when {
+                        r != null -> TRow(name, share(grams, k), t("%s г", g(grams)), range(r, " " + t("г")), mark(grams, r))
+                        pct != null -> TRow(name, null, "${Math.round(sh)}%", range(pct, "%"), mark(sh, pct.start..(pct.endInclusive / 1.1)))
+                        else -> TRow(name, share(grams, k), t("%s г", g(grams)), "—", "")
+                    }
+                }
+                if (w != null && m.protein > 0) TRow(
+                    t("Белок на кг"), null, formatNumber(Math.round(m.protein / w * 10) / 10.0) + " " + t("г"),
+                    "${formatNumber(DayNorms.P_LO)}–${formatNumber(DayNorms.P_HI)} " + t("г"), mark(m.protein / w, DayNorms.P_LO..DayNorms.P_HI),
+                )
+                MealAbsorption(meals, w)
+                Text(
+                    (if (norms.kcal != null) t("Нормы: белок 1,6–2 г на кг веса (рост мышц), жиры 20–35 % и углеводы 45–65 % от расхода за день.")
+                    else t("Укажите рост и год рождения в «Профиле» — появятся нормы калорий, жиров и углеводов в граммах.")) +
+                        " " + t("✓ в норме, ↓ мало, ↑ много."),
+                    style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+    )
+}
+
+/**
+ * Усвоение БЖУ по приёмам пищи (5.27). Белок: мышцы лучше всего используют ≈ 0,4 г/кг за приём при 4 приёмах в день
+ * (Schoenfeld, Aragon, JISSN 2018); ниже ≈ 0,24 г/кг синтез мышечного белка заметно слабее (Moore и др., 2015);
+ * без веса — порог 20 г (Moore и др., 2009). Углеводы — гликемическая нагрузка приёма (≤10 низкая, ≥20 высокая).
+ */
+object Absorption {
+    const val LOW_KG = 0.24; const val GOOD_KG = 0.4; const val LOW_G = 20.0
+    data class Row(val kind: String, val kcal: Double?, val p: Double?, val f: Double?, val c: Double?, val gl: Double?) {
+        fun proteinOk(w: Double?) = p != null && p >= (w?.let { it * LOW_KG } ?: LOW_G)
+    }
+    fun rows(meals: List<Meal>): List<Row> = mealUnits(meals).map { combineMeals(it) }
+        .filter { it.protein != null || it.fat != null || it.carbs != null }
+        .map { Row(it.kind, it.kcal, it.protein, it.fat, it.carbs, it.glEff) }
+}
+
+@Composable
+private fun MealAbsorption(meals: List<Meal>, w: Double?) {
+    val rows = Absorption.rows(meals)
+    if (rows.isEmpty()) return
+    val cs = MaterialTheme.colorScheme
+    fun g(v: Double?) = v?.let { formatNumber(Math.round(it).toDouble()) } ?: "—"
+    val low = w?.let { it * Absorption.LOW_KG } ?: Absorption.LOW_G
+    val good = w?.let { it * Absorption.GOOD_KG }
+    Text(t("По приёмам пищи"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+    rows.forEach { r ->
+        Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(t(r.kind), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Text((r.kcal?.let { t("%s ккал", g(it)) + " · " } ?: "") + t("Б %s · Ж %s · У %s", g(r.p), g(r.f), g(r.c)),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            val notes = listOfNotNull(
+                r.p?.let { p ->
+                    when {
+                        p < low -> t("белка мало для мышц (меньше %s г)", g(low))
+                        good != null && p >= good -> t("белка на максимум для мышц ✓")
+                        else -> t("белка достаточно ✓")
+                    }
+                },
+                r.gl?.let { gl -> t("ГН %s — %s", formatNumber(Math.round(gl * 10) / 10.0), Glycemic.loadName(Glycemic.mealGlLevel(gl))) },
+            )
+            if (notes.isNotEmpty()) Text(notes.joinToString(" · "), style = MaterialTheme.typography.labelSmall,
+                color = if (r.p != null && r.p < low) cs.error else cs.onSurfaceVariant)
+        }
+    }
+    val okN = rows.count { it.proteinOk(w) }
+    val pTotal = rows.sumOf { it.p ?: 0.0 }
+    val top = rows.maxOfOrNull { it.p ?: 0.0 } ?: 0.0
+    val tips = buildList {
+        add(t("Белок с порогом для мышц — в %d из %d приёмов.", okN, rows.size))
+        if (pTotal > 0 && top / pTotal > 0.6 && rows.size > 1) add(t("Больше половины белка — за один приём: лучше распределить ровнее."))
+        if (good != null) add(t("Для роста мышц — 3–4 приёма по ≈ %s г белка (0,4 г на кг).", g(good)))
+        val hi = rows.count { (it.gl ?: 0.0) >= 20 }
+        if (hi > 0) add(t("Приёмов с высокой ГН: %d — добавьте к ним белок, клетчатку или овощи, сахар поднимется мягче.", hi))
+    }
+    Text(tips.joinToString(" "), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+    Text(t("Источники: Schoenfeld, Aragon (JISSN, 2018); Moore и др. (2009, 2015)."), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+}
+
 @Composable
 fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: String?, notify: (String) -> Unit) {
     val repo = act.repo
@@ -88,6 +279,11 @@ fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: Strin
     val total = mealKcal(meals)
     var open by remember { mutableStateOf<String?>(null) }
     var askLink by remember { mutableStateOf<Pair<String, Meal>?>(null) }
+    // 5.57: шаблоны приёмов
+    var tplTick by remember { mutableStateOf(0) }
+    val tpls = remember(tplTick) { MealTpls.all(act.prefs) }
+    var saveTpl by remember { mutableStateOf<List<Meal>?>(null) }
+    var editTpls by remember { mutableStateOf(false) }
 
     /** Сцепить карточку с приёмом [unit]: один приём пищи, вид — как у приёма. */
     fun linked(list: List<Meal>, m: Meal, unit: String): List<Meal> {
@@ -116,15 +312,23 @@ fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: Strin
                 if (unit.size == 1) MealSummary(repo, unit[0]) { open = unit[0].id; Log.d("Food", "открыт приём пищи ${unit[0].kind}") }
                 else LinkedMealSummary(repo, unit) { open = it.id; Log.d("Food", "открыта позиция ${it.kind}") }
             }
+            DayMacros(repo, date, meals)
             if (meals.any { it.kcal != null || it.gi != null || it.carbs != null }) GlycemicDaySummary(meals)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = {
                 val h = LocalTime.now().hour
                 val kind = when { h < 11 -> mealKindsRu[0]; h < 16 -> mealKindsRu[1]; h < 21 -> mealKindsRu[2]; else -> mealKindsRu[3] }
                 val same = meals.firstOrNull { it.kind == kind }
                 if (same != null && kind != mealKindsRu[3]) askLink = kind to same
                 else { val m = Meal(kind = kind); save(meals + m); open = m.id }
-            }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text(t("Добавить приём пищи"))
+            }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text(t("Добавить приём пищи"), maxLines = 1)
+            }
+            // 5.57.1: шаблоны — одной кнопкой, выбор и подтверждение во всплывающем окне
+            if (tpls.isNotEmpty()) OutlinedButton({ editTpls = true }, Modifier.testTag("tpl_open"),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)) {
+                Icon(Icons.Filled.BookmarkAdded, null); Spacer(Modifier.width(4.dp)); Text(t("Шаблон"), maxLines = 1)
+            }
             }
         }
     }
@@ -151,6 +355,29 @@ fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: Strin
         )
     }
 
+    saveTpl?.let { unit ->
+        var name by remember(unit) { mutableStateOf(MealTpl.defaultName(unit)) }
+        AlertDialog(
+            onDismissRequest = { saveTpl = null },
+            title = { Text(t("Шаблон приёма")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(t("Сохранятся фото, описание, калории и БЖУ%s. Добавлять — кнопкой «Шаблон» рядом с «Добавить приём пищи».",
+                        if (unit.size > 1) t(" всех %d позиций", unit.size) else ""), style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(name, { name = it.take(40) }, label = { Text(t("Название")) }, singleLine = true)
+                }
+            },
+            confirmButton = { TextButton({
+                MealTpls.add(act.prefs, MealTpl.from(unit, name, repo.photosDir)); tplTick++; saveTpl = null; notify(t("Шаблон сохранён"))
+            }) { Text(t("Сохранить")) } },
+            dismissButton = { TextButton({ saveTpl = null }) { Text(t("Отмена")) } },
+        )
+    }
+    if (editTpls) MealTplPicker(tpls, date, onPick = { tp ->
+        save(MealTpls.applyTo(parseMeals(repo.entries.value[date]?.get(item.id)), tp, date, dir = repo.photosDir)); editTpls = false
+        notify(t("Добавлено: %s", tp.name)); Log.i("Food", "шаблон в день: ${tp.name}")
+    }, onManage = { editTpls = false; act.openSettings.value = "meal_tpl" }, onDismiss = { editTpls = false })
+
     val editing = meals.firstOrNull { it.id == open }
     if (editing != null) {
         Dialog(onDismissRequest = {
@@ -163,7 +390,7 @@ fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: Strin
                 shape = RoundedCornerShape(20.dp), tonalElevation = 6.dp,
             ) {
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(4.dp).imePadding()) {
-                    MealCard(act, editing, notify,
+                    MealCard(act, date, editing, notify,
                         others = meals.filter { it.unit != editing.unit || (editing.link.isNotEmpty() && it.id != editing.id) },
                         onLink = { unit -> save(linked(parseMeals(repo.entries.value[date]?.get(item.id)), editing, unit)) },
                         onUnlink = { save(unlinked(parseMeals(repo.entries.value[date]?.get(item.id)), editing)) },
@@ -182,6 +409,11 @@ fun MealsBlock(act: MainActivity, item: TemplateItem, date: String, value: Strin
                             if (editing.text.isBlank() && editing.photos.isEmpty() && editing.kcal == null) save(meals.filterNot { it.id == editing.id })
                             open = null
                         })
+                    if (editing.text.isNotBlank() || editing.kcal != null) TextButton({
+                        saveTpl = parseMeals(repo.entries.value[date]?.get(item.id)).filter { it.unit == editing.unit }
+                    }, Modifier.padding(start = 8.dp).testTag("tpl_save")) {
+                        Icon(Icons.Filled.BookmarkAdd, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(t("Сохранить как шаблон"))
+                    }
                 }
             }
         }
@@ -250,7 +482,9 @@ private fun MealSummary(repo: Repo, meal: Meal, onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(t(meal.kind), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    // 5.45: время приёма по фото
+                    val tm = meal.at?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).let { z -> clockOf(z.hour * 60 + z.minute) } }
+                    Text(t(meal.kind) + (tm?.let { " · $it" } ?: ""), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                     if (meal.photos.size > 1) Text("📷 ${meal.photos.size}  ", style = MaterialTheme.typography.labelSmall)
                     Text(meal.kcal?.let { t("%s ккал", formatNumber(it)) } ?: "—", fontWeight = FontWeight.SemiBold)
                 }
@@ -274,9 +508,11 @@ private fun MealSummary(repo: Repo, meal: Meal, onClick: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MealCard(
-    act: MainActivity, meal: Meal, notify: (String) -> Unit, onChange: (Meal) -> Unit, onDelete: () -> Unit, onDone: () -> Unit,
+internal fun MealCard(
+    act: MainActivity, date: String, meal: Meal, notify: (String) -> Unit, onChange: (Meal) -> Unit, onDelete: () -> Unit, onDone: () -> Unit,
     others: List<Meal> = emptyList(), onLink: (String) -> Unit = {}, onUnlink: () -> Unit = {},
+    /** 5.57.2: для позиции шаблона — свой заголовок и без выбора вида (он общий у шаблона). */
+    title: String? = null, showKind: Boolean = true,
 ) {
     val ctx = LocalContext.current
     val repo = act.repo
@@ -288,35 +524,45 @@ private fun MealCard(
     var current by remember { mutableStateOf(meal) }
     current = meal
 
-    fun addPhoto(uri: Uri?) {
+    // 5.45: время приёма — по первому фото: с камеры — сейчас, из галереи — время съёмки (EXIF), если оно в тот же день
+    fun withTime(m: Meal, taken: Long?): Meal {
+        if (m.at != null || taken == null) return m
+        val d = java.time.Instant.ofEpochMilli(taken).atZone(java.time.ZoneId.systemDefault()).toLocalDate().key()
+        return if (d == date) m.copy(at = taken).also { Log.i("Food", "время приёма по фото: ${clockOf(java.time.Instant.ofEpochMilli(taken).atZone(java.time.ZoneId.systemDefault()).let { z -> z.hour * 60 + z.minute })}") } else m
+    }
+    fun addPhoto(uri: Uri?, camera: Boolean = false) {
         uri ?: return
         scope.launch {
+            val taken = if (camera) System.currentTimeMillis() else Photos.takenAt(ctx, uri)
             val name = Photos.import(ctx, repo.photosDir, uri)
             Log.i("Food", "фото добавлено: $name")
-            if (name != null) onChange(current.copy(photos = current.photos + name)) else notify(t("Не удалось загрузить фото"))
+            if (name != null) onChange(withTime(current.copy(photos = current.photos + name), taken)) else notify(t("Не удалось загрузить фото"))
         }
     }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
         scope.launch {
             var m = current
-            uris.forEach { u -> Photos.import(ctx, repo.photosDir, u)?.let { m = m.copy(photos = m.photos + it) } }
+            uris.forEach { u ->
+                val taken = Photos.takenAt(ctx, u)
+                Photos.import(ctx, repo.photosDir, u)?.let { m = withTime(m.copy(photos = m.photos + it), taken) }
+            }
             onChange(m)
         }
     }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        if (ok) addPhoto(cameraUri)
+        if (ok) addPhoto(cameraUri, camera = true)
     }
 
     Column(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(t("Приём пищи"), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                TextButton(onClick = onDone) { Text(t("Готово")) }
+                Text(title ?: t("Приём пищи"), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDone, modifier = Modifier.testTag("meal_done")) { Text(t("Готово")) }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    mealKindsRu.forEach { k ->
+                Row(Modifier.weight(1f).hScroll(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (showKind) mealKindsRu.forEach { k ->
                         FilterChip(selected = meal.kind == k, onClick = { onChange(meal.copy(kind = k)) }, label = { Text(t(k)) })
                     }
                 }
@@ -345,7 +591,7 @@ private fun MealCard(
                         color = if (same != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalMinimumInteractiveComponentSize provides 0.dp) {
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             units.forEach { u ->
                                 androidx.compose.material3.AssistChip(onClick = { onLink(u[0].unit) },
                                     leadingIcon = { Icon(Icons.Filled.Link, null, Modifier.size(16.dp)) },
@@ -356,13 +602,14 @@ private fun MealCard(
                 }
             }
             // фото
-            if (meal.photos.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (meal.photos.isNotEmpty()) Row(Modifier.hScroll(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 meal.photos.forEach { p ->
                     PhotoImage(File(repo.photosDir, p), 300,
                         Modifier.size(96.dp).clip(RoundedCornerShape(10.dp)).clickable { viewPhoto = p })
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            var refOpen by remember { mutableStateOf(false) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FilledTonalButton(onClick = {
                     gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 }, modifier = Modifier.weight(1f)) {
@@ -377,25 +624,53 @@ private fun MealCard(
                 }, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Filled.PhotoCamera, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(t("Камера"))
                 }
+                androidx.compose.material3.FilledTonalIconButton(onClick = { refOpen = true }) {
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, t("Справочник продуктов"))
+                }
             }
+            if (refOpen) FoodPickDialog(onDismiss = { refOpen = false }, onAll = {
+                refOpen = false; act.openSettings.value = "ref"
+            }) { f, g -> onChange(FoodDb.addTo(current, f, g)); refOpen = false; notify(t("Добавлено: %s", f.name)) }
             TextField2(meal.text, t("Что ели (можно не заполнять, если есть фото)")) { onChange(current.copy(text = it)) }
             NumberField(meal.kcal?.let(::numStr), t("ккал"), Modifier.fillMaxWidth(), label = t("Калории")) { onChange(current.copy(kcal = it)) }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NumberField(meal.protein?.let(::numStr), t("г"), Modifier.weight(1f), label = t("Белки")) { onChange(current.copy(protein = it)) }
                 NumberField(meal.fat?.let(::numStr), t("г"), Modifier.weight(1f), label = t("Жиры")) { onChange(current.copy(fat = it)) }
-                NumberField(meal.carbs?.let(::numStr), t("г"), Modifier.weight(1f), label = t("Углеводы")) { onChange(current.copy(carbs = it)) }
+                // 5.58.1: ГН считается из ГИ и углеводов — правка углеводов пересчитывает её
+                NumberField(meal.carbs?.let(::numStr), t("г"), Modifier.weight(1f), label = t("Углеводы")) { onChange(current.copy(carbs = it, gl = null)) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 5.58.1: ГИ и ГН — строкой «посчитано автоматически»; поля — по «Изменить»
+            var giEdit by remember { mutableStateOf(false) }
+            var giInfo by remember { mutableStateOf(false) }
+            if (!giEdit) Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (meal.gi != null || meal.glEff != null) listOfNotNull(meal.gi?.let { t("ГИ %s", formatNumber(Math.round(it).toDouble())) },
+                        meal.glEff?.let { t("ГН %s", formatNumber(Math.round(it).toDouble())) }).joinToString(" · ") else t("ГИ и ГН — не посчитаны"),
+                        style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("gi_line"))
+                    Text(if (meal.gi == null) (if (act.prefs.aiReady) t("ИИ посчитает вместе с калориями") else t("считаются по ГИ — его даёт ИИ"))
+                        else t("посчитано автоматически: ГН = ГИ × углеводы / 100"),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton({ giEdit = true }, Modifier.testTag("gi_edit")) { Text(t("Изменить")) }
+                IconButton(onClick = { giInfo = true }) { Icon(Icons.AutoMirrored.Filled.HelpOutline, t("Что это")) }
+            } else Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 NumberField(meal.gi?.let(::numStr), "", Modifier.weight(1f), label = t("ГИ")) { onChange(current.copy(gi = it)) }
                 NumberField(meal.gl?.let(::numStr), "", Modifier.weight(1f), label = t("ГН"),
                     placeholder = meal.glEff?.takeIf { meal.gl == null }?.let { formatNumber(Math.round(it).toDouble()) }) { onChange(current.copy(gl = it)) }
-                var giInfo by remember { mutableStateOf(false) }
                 IconButton(onClick = { giInfo = true }) { Icon(Icons.AutoMirrored.Filled.HelpOutline, t("Что это")) }
-                if (giInfo) GlycemicInfoDialog { giInfo = false }
             }
-            if (meal.gi == null && meal.gl == null) Text(t("ГИ и ГН ИИ посчитает вместе с калориями; ГН без ввода считается из ГИ и углеводов."),
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            run {
+            if (giInfo) GlycemicInfoDialog { giInfo = false }
+            // 5.39: без настроенного ИИ — без его полей; вместо них ссылка на настройку
+            if (!act.prefs.aiReady) Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.AutoAwesome, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                    Spacer(Modifier.width(8.dp))
+                    Text(t("Калории, БЖУ и ГИ по фото или описанию может считать ИИ"), Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    TextButton({ act.openSettings.value = "ai" }) { Text(t("Подключить"), color = MaterialTheme.colorScheme.onTertiaryContainer, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
+                }
+            }
+            if (act.prefs.aiReady) run {
                 TextField2(meal.hint, t("Уточнение для расчёта: тарелка 24 см; смузи 400 мл — банан 40%, молоко 40%, овсянка 20%")) {
                     onChange(current.copy(hint = it))
                 }
@@ -413,11 +688,12 @@ private fun MealCard(
                                 fat = e.fat?.let { Math.round(it).toDouble() },
                                 carbs = e.carbs?.let { Math.round(it).toDouble() },
                                 gi = e.gi?.let { Math.round(it).toDouble() } ?: current.gi,
-                                gl = e.gl?.let { Math.round(it).toDouble() } ?: current.gl,
+                                // 5.58.1: ГН — из ГИ и углеводов (glEff), чтобы совпадала с полями после правок
+                                gl = if (e.gi != null || current.gi != null) null else e.gl?.let { Math.round(it).toDouble() } ?: current.gl,
                                 text = current.text.ifBlank { e.description },
                             ))
                             notify(t("Оценка: %s ккал. Проверьте и поправьте при необходимости.", formatNumber(Math.round(e.kcal).toDouble())))
-                        }.onFailure { Log.e("AI", "оценка калорий", it); notify(t("Не удалось оценить: %s", it.message)) }
+                        }.onFailure { Log.e("AI", "оценка калорий", it); notify(AiGuide.errorText(it.message)) }
                         busy = false
                     }
                 }, modifier = Modifier.fillMaxWidth()) {
@@ -664,6 +940,13 @@ fun BodyBlock(repo: Repo, item: TemplateItem, date: String, value: String?, manu
                     " · " + (AppNames.from(srcValue) ?: "openScale")),
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // 5.25: точность состава тела — утро натощак и правдоподобность скачков
+            if (!manual && !day.morning()) Text(
+                t("Взвешивание не утром — жир, мышцы и вода менее точны. Для сравнения между днями — утром натощак, после туалета."),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+            if (!manual) BodyCheck.jump(repo.entries.value, item.id, java.time.LocalDate.parse(date))?.let {
+                Text(BodyCheck.text(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+            }
             Spacer(Modifier.height(6.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = 3) {
                 day.metrics.sortedBy { BodyCatalog.order(it.id) }.forEach { m ->

@@ -28,6 +28,9 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -100,6 +103,8 @@ fun MonthView(
                     IconButton(onClick = { onMonth(month.plusMonths(1)) }) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, t("Вперёд")) }
                 }
             }
+            // 5.62: эксперименты — над итогами месяца
+            item("exp") { ExperimentsCard(repo, prefs) }
             if (data.heatRows.isEmpty()) item("empty") {
                 Text(t("За этот месяц пока нет записей."), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
             } else {
@@ -114,7 +119,7 @@ fun MonthView(
     }
 
     if (pickRows) HeatRowsDialog(data, onSave = { save(cfg.copy(heat = it)); pickRows = false }, onDismiss = { pickRows = false })
-    if (setup) IndexSetupDialog(data, onSave = { save(it); setup = false }, onDismiss = { setup = false })
+    if (setup) IndexSetupDialog(data, Goal.of(prefs.planGoal), onSave = { save(it); setup = false }, onDismiss = { setup = false })
 }
 
 // ---------- 1. тепловая карта ----------
@@ -222,7 +227,7 @@ private fun FactorsCard(d: MonthData, onOutcome: (String) -> Unit) {
     SectionCard(title, action = {
         Text(t("в дни с / без"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }) {
-        if (d.scaleOutcome != null) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (d.scaleOutcome != null) androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(selected = !d.outcomeIsIndex, onClick = { onOutcome("rate") }, label = { Text(d.scaleOutcome.title) })
             FilterChip(selected = d.outcomeIsIndex, onClick = { onOutcome("index") }, label = { Text(t("Индекс дня")) })
         }
@@ -393,8 +398,11 @@ private fun IndexChart(d: MonthData, openDay: (LocalDate) -> Unit) {
 
 /** Выбор состава индекса, цели индекса и целей по пунктам. */
 @Composable
-private fun IndexSetupDialog(d: MonthData, onSave: (MonthCfg) -> Unit, onDismiss: () -> Unit) {
+private fun IndexSetupDialog(d: MonthData, planGoal: Goal?, onSave: (MonthCfg) -> Unit, onDismiss: () -> Unit) {
     var keys by remember { mutableStateOf(d.indexKeys) }
+    var auto by remember { mutableStateOf(d.cfg.auto) }
+    // в автоматическом режиме цели показываем такими, какими они станут
+    val autoData = remember(auto) { if (auto) MonthData(d.template, d.entries, d.month, d.cfg.autoApply(d.template, planGoal)) else d }
     var goals by remember { mutableStateOf(d.metrics.associate { it.key to d.goal(it) }) }
     var target by remember { mutableIntStateOf(d.cfg.target) }
     var daily by remember { mutableStateOf(d.cfg.daily) }
@@ -409,13 +417,36 @@ private fun IndexSetupDialog(d: MonthData, onSave: (MonthCfg) -> Unit, onDismiss
                     t("Отметьте, из чего складывается индекс (0–100). Пропуски его не снижают. Галочка-бонус только добавляет, «каждый день» — без отметки считается нулём, «в неделю» — цель на неделю, день без отметки не минус. «Минус» — для вредного: отметка или вариант списка снижает индекс."),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
+                // 5.37: автоматически по цели «Программы» или вручную
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    listOf(t("По цели"), t("Вручную")).forEachIndexed { i, l ->
+                        SegmentedButton(selected = auto == (i == 0), onClick = { auto = i == 0 }, shape = SegmentedButtonDefaults.itemShape(i, 2)) { Text(l, maxLines = 1) }
+                    }
+                }
+                Text(if (auto) (planGoal?.let { t("Цели пунктов — под цель «%s»: сон, шаги и тренировки подстроятся сами при её смене. Отметьте только, что входит в индекс.", it.title) }
+                        ?: t("Цель в «Программе» не выбрана — цели пунктов стандартные. Отметьте только, что входит в индекс."))
+                    else t("Цели, бонус, «каждый день», «в неделю» и минус — для каждого пункта вручную."),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(t("Цель индекса"), Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                     Stepper(target.toString(), { target = (target - 5).coerceAtLeast(5) }, { target = (target + 5).coerceAtMost(100) })
                 }
                 HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                d.metrics.forEach { m ->
+                if (auto) d.metrics.forEach { m ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(m.key in keys, { on -> keys = if (on) keys + m.key else keys - m.key })
+                        Column(Modifier.weight(1f)) {
+                            Text(m.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(when {
+                                m.key in d.cfg.negative -> t("минус — снижает индекс")
+                                m.kind == MKind.CHECK -> t("бонус — только добавляет")
+                                else -> t("цель: %s", m.goalText(autoData.goal(m)))
+                            }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else d.metrics.forEach { m ->
                     val g = goals[m.key] ?: d.goal(m)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(m.key in keys, { on -> keys = if (on) keys + m.key else keys - m.key })
@@ -450,14 +481,15 @@ private fun IndexSetupDialog(d: MonthData, onSave: (MonthCfg) -> Unit, onDismiss
                     if (m.kind == MKind.OPTION) EffectChips(m.key in negative, Modifier.padding(start = 40.dp), onChange = setSign)
                     if (m.kind == MKind.CHECK) {
                         val w = weekly[m.key] ?: 0
-                        Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically,
+                        // 5.35: чипы переносятся на новую строку, а не сжимаются в столбик (крупный шрифт, узкий экран)
+                        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                        androidx.compose.foundation.layout.FlowRow(Modifier.padding(start = 40.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             EffectChips(m.key in negative, onChange = setSign)
-                            Spacer(Modifier.width(4.dp))
                             FilterChip(selected = w == 0 && m.key !in daily, onClick = { daily = daily - m.key },
-                                label = { Text(if (m.key in negative) t("иногда") else t("бонус")) })
+                                label = { Text(if (m.key in negative) t("иногда") else t("бонус"), maxLines = 1, softWrap = false) })
                             FilterChip(selected = w == 0 && m.key in daily, onClick = { daily = daily + m.key; weekly = weekly - m.key },
-                                label = { Text(t("каждый день")) })
+                                label = { Text(t("каждый день"), maxLines = 1, softWrap = false) })
                         }
                         if (m.key !in negative) Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(t("в неделю"), Modifier.weight(1f), style = MaterialTheme.typography.labelMedium,
@@ -478,7 +510,8 @@ private fun IndexSetupDialog(d: MonthData, onSave: (MonthCfg) -> Unit, onDismiss
                     val def = MonthData(d.template, d.entries, d.month, d.cfg.copy(goals = emptyMap())).goal(m)
                     if (Math.abs(g - def) > 1e-9) m.key to g else null
                 }.toMap()
-                onSave(d.cfg.copy(index = keys, goals = changed, target = target, daily = daily, weekly = weekly, negative = negative))
+                if (auto) onSave(d.cfg.copy(index = keys, target = target).autoApply(d.template, planGoal))
+                else onSave(d.cfg.copy(index = keys, goals = changed, target = target, daily = daily, weekly = weekly, negative = negative, auto = false))
             }) { Text(t("Готово")) }
         },
         dismissButton = {
