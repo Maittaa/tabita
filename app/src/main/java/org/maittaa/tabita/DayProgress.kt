@@ -68,7 +68,9 @@ fun DayProgressLine(
     val auto = remember(template, entries, date) { DayCopy.automatic(template, entries[date.key()] ?: emptyMap()) }
     // 5.65: что значат сегодняшние данные — сравнение с вашей обычной нормой
     val insights = remember(template, entries, date, finding, covered) { DayInsight.lines(template, entries, date, finding = finding, covered = covered) }
-    if (di.total == 0 && weekly.isEmpty() && streak < 2 && st.freezes == 0 && copy.isEmpty() && auto == 0 && insights.isEmpty()) return
+    // 5.67: мягкое возвращение — серия прервалась, сегодня ещё пусто
+    val back = st.broken && date == LocalDate.now() && st.gap(date) >= 2
+    if (di.total == 0 && weekly.isEmpty() && streak < 2 && st.freezes == 0 && st.week == 0 && copy.isEmpty() && auto == 0 && insights.isEmpty() && !back) return
     val grey = MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
@@ -101,6 +103,11 @@ fun DayProgressLine(
                     }
                 }
             }
+            if (back) Text(
+                t("С возвращением! Перерыв %d дн. — так бывает. Отдельные пропуски почти не мешают привычке закрепляться, важно просто продолжить: любая запись сегодня — и серия снова пошла.", st.gap(date)) +
+                    (if (st.freezes > 0) " " + t("Заморозки сохранились: %d.", st.freezes) else ""),
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp).testTag("welcome_back"),
+            )
             insights.forEachIndexed { i, line ->
                 Row(Modifier.padding(top = if (i == 0 && di.total > 0) 6.dp else 2.dp).testTag("insight_$i")) {
                     Icon(Icons.Filled.Lightbulb, null, Modifier.size(15.dp).padding(top = 1.dp), tint = MaterialTheme.colorScheme.tertiary)
@@ -117,7 +124,7 @@ fun DayProgressLine(
                         icon = { Icon(Icons.Filled.ContentCopy, null, Modifier.size(14.dp)) }, modifier = Modifier.testTag("copy_yday"))
                 }
             }
-            if (weekly.isNotEmpty() || streak >= 2 || st.freezes > 0) FlowRow(
+            if (weekly.isNotEmpty() || streak >= 2 || st.freezes > 0 || st.week > 0) FlowRow(
                 Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalArrangement = Arrangement.Center,
             ) {
@@ -128,6 +135,9 @@ fun DayProgressLine(
                         color = if (n >= w) MaterialTheme.colorScheme.primary else grey,
                     )
                 }
+                // 5.67: мягкая серия «N из 7» — когда подряд пока мало
+                if (streak < 2 && st.week > 0) Text(t("за 7 дней: %d из 7", st.week), style = MaterialTheme.typography.labelMedium, color = grey,
+                    modifier = Modifier.testTag("week7"))
                 if (streak >= 2 || st.freezes > 0) {
                     var info by remember { mutableStateOf(false) }
                     Row(Modifier.clickable { info = true }.testTag("streak"), verticalAlignment = Alignment.CenterVertically) {

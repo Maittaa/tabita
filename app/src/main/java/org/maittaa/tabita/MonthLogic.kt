@@ -395,7 +395,14 @@ class MonthData(
         val frozen: List<LocalDate>,
         /** Серия прервалась вчера или раньше, и после этого ещё ничего не записано. */
         val broken: Boolean,
-    )
+        /** 5.67: всего заполненных дней (для вех), последний заполненный до сегодня и «N из 7» за последнюю неделю. */
+        val total: Int = 0,
+        val lastFilled: LocalDate? = null,
+        val week: Int = 0,
+    ) {
+        /** Дней перерыва перед сегодняшним днём (0 — перерыва нет). */
+        fun gap(today: LocalDate): Int = lastFilled?.let { (java.time.temporal.ChronoUnit.DAYS.between(it, today) - 1).toInt().coerceAtLeast(0) } ?: 0
+    }
 
     fun streak(d: LocalDate): Streak {
         val start = entries.keys.mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }
@@ -423,7 +430,9 @@ class MonthData(
             }
             day = end.plusDays(1)
         }
-        return Streak(n, bank, total % FREEZE_EVERY, frozen.toList(), broken && n == 0)
+        val last = (1..400).asSequence().map { d.minusDays(it.toLong()) }.takeWhile { it >= start }.firstOrNull { filled(it) }
+        val week = (0..6).count { filled(d.minusDays(it.toLong())) }
+        return Streak(n, bank, total % FREEZE_EVERY, frozen.toList(), broken && n == 0, total, last, week)
     }
 
     /** Совместимость: длина серии и была ли заморозка за последние 7 дней. */

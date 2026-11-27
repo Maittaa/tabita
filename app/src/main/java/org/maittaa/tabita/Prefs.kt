@@ -372,6 +372,11 @@ class Prefs(context: Context) {
         get() = sp.getString("findSeen", "") ?: ""
         set(v) = sp.edit().putString("findSeen", v).apply()
 
+    /** 5.67: последняя просмотренная веха (14/30/66 дней), 0 — ни одной. */
+    var milestoneSeen: Int
+        get() = sp.getInt("msSeen", 0)
+        set(v) = sp.edit().putInt("msSeen", v).apply()
+
     var motivOn: Boolean
         get() = sp.getBoolean("motOn", false)
         set(v) = sp.edit().putBoolean("motOn", v).apply()

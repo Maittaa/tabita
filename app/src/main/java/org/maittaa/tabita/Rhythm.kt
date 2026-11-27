@@ -313,5 +313,5 @@ object Alarms {
     /** Открыть установку будильника в приложении часов. */
     fun setIntent(min: Int) = android.content.Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
         .putExtra(android.provider.AlarmClock.EXTRA_HOUR, min / 60).putExtra(android.provider.AlarmClock.EXTRA_MINUTES, min % 60)
-        .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "Tabita: подъём")
+        .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, t("Tabita: подъём"))
 }

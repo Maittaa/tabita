@@ -12,6 +12,10 @@ import java.util.Locale
  * поэтому интерфейс сразу перерисовывается при переключении.
  */
 object I18n {
+    /** 5.67: в тестах — собирать русские строки без английского перевода. */
+    @Volatile var track = false
+    val missing: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
+
     var lang by mutableStateOf("ru")
     var currency by mutableStateOf("₽")
     val isEn get() = lang == "en"
@@ -40,7 +44,7 @@ object I18n {
 }
 
 /** Перевод строки интерфейса. */
-fun t(ru: String): String = if (I18n.isEn) EN[ru] ?: ru else ru
+fun t(ru: String): String = if (I18n.isEn) EN[ru] ?: ru.also { if (I18n.track && ru.any { c -> c in 'А'..'я' || c == 'ё' }) I18n.missing += ru } else ru
 
 /** Перевод с подстановкой: t("заполнено %d из %d", a, b) */
 fun t(ru: String, vararg args: Any?): String = t(ru).format(*args)

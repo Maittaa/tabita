@@ -272,6 +272,18 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
         fun doneBtnHint() { if (btnHint) { btnHint = false; act.prefs.tileBtnHint = false } }
         Box(Modifier.weight(1f)) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(vertical = 0.dp)) {
+            // 5.67: вехи 14/30/66 заполненных дней — карточка один раз, пока не нажато «Понятно» или переход
+            if (!editing && date == LocalDate.now()) {
+                var msSeen by remember { mutableStateOf(act.prefs.milestoneSeen) }
+                val total = remember(template, entries, date) { MonthData(template, entries, date, monthCfg).streak(date).total }
+                Milestones.due(total, msSeen)?.let { m ->
+                    fun seen() { act.prefs.milestoneSeen = m; msSeen = m }
+                    MilestoneCard(m, total, onGo = {
+                        seen()
+                        when (m) { 14 -> act.openProgram.value = PSUB_MONTH; 30 -> act.openProgram.value = PSUB_WEEK; else -> allItems = true }
+                    }, onDismiss = { seen() })
+                }
+            }
             // 5.66: строка прогресса прокручивается вместе с плитками, а не висит над ними
             if (!editing) DayProgressLine(template, entries, monthCfg, date, onOpen = { popup = it }, onCopy = { copyAsk = it }, finding = finding,
                 covered = covered)
