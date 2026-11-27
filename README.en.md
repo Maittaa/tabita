@@ -4,7 +4,7 @@
 
 **A personal health and habit diary for Android.** One app instead of several: a daily checklist, food, sleep, workouts, weight and body measurements, wellbeing and spending. Data from your watch and scale comes in automatically, and the app shows what actually affects how you feel.
 
-Version **5.69** · Android 9+ · Russian and English interface (the strength training section is Russian only for now)
+Version **5.70** · Android 9+ · Russian and English interface (the strength training section is Russian only for now)
 
 **Download:** the latest APK is in [Releases](https://github.com/Maittaa/tabita/releases/latest). It installs as an update over the existing version.
 
@@ -19,7 +19,7 @@ Version **5.69** · Android 9+ · Russian and English interface (the strength tr
 - **Grounded in research.** Thresholds and formulas come from published studies and guidelines (listed below), not made‑up norms.
 - **No guilt.** A missed day does not reset your streak: you get a freeze for every 7 filled days, up to three in stock. After a break the app welcomes you back without blame, and milestones at 14, 30 and 66 days show what the collected data now allows.
 - **Your data stays with you.** Everything is stored on the phone. There is a full backup with settings, CSV export, and fingerprint or PIN lock. AI is optional and uses your own key.
-- **Flexible interface.** The “Today” screen is built from tiles: size, order and content are up to you.
+- **Flexible interface.** The “Today” screen is built from tiles: size, order and content are up to you. Tiles are coloured by meaning, in Material You colours that follow your accent and wallpaper.
 
 ## Features
 

@@ -447,6 +447,10 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                 }
             }
             Spacer(Modifier.height(8.dp))
+            // 5.70: цветные плитки по смыслу
+            SwitchRow(t("Цветные плитки"), Look.colorful) { Look.colorful = it; prefs.colorTiles = it }
+            Hint(t("Сон, шаги, пульс, вес, вода, еда и другие плитки — каждая своим цветом. Оттенки подстраиваются под акцентный цвет и обои, как в приложениях Google."))
+            Spacer(Modifier.height(8.dp))
             Text(t("Акцентный цвет"), style = MaterialTheme.typography.labelLarge)
             if (!Compat.dynamicColors) Hint(Compat.dynamicHelp())
             if (Look.dynamicAvailable) FilterChip(

@@ -29,8 +29,10 @@ import androidx.compose.ui.unit.dp
 object Look {
     var mode by mutableStateOf("system")     // system | light | dark
     var accent by mutableStateOf("dynamic")  // dynamic | ключ из [accents]
+    /** 5.70: цветные плитки по смыслу (Tones.kt). */
+    var colorful by mutableStateOf(true)
 
-    fun init(p: Prefs) { mode = p.themeMode; accent = p.accent }
+    fun init(p: Prefs) { mode = p.themeMode; accent = p.accent; colorful = p.colorTiles }
 
     val dynamicAvailable get() = Build.VERSION.SDK_INT >= 31
 

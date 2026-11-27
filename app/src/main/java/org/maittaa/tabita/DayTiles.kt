@@ -57,7 +57,9 @@ data class TileSummary(val title: String, val value: String, val sub: String, va
                        /** 5.47: доля к норме/цели (0…1) — полоса в плитках побольше; null — нет нормы. */
                        val progress: Float? = null,
                        /** 5.48: быстрые действия в уменьшенной плитке. */
-                       val actions: List<QuickAction> = emptyList())
+                       val actions: List<QuickAction> = emptyList(),
+                       /** 5.70: категория для цветной плитки (Tones.kt). */
+                       val tone: Tone? = null)
 
 /** Состояние чекапа на дату: пройден в этот день, пора или через сколько дней. */
 data class WbStatus(val takenToday: Checkup?, val daysLeft: Int, val questions: Int, val last: String?) {
@@ -261,11 +263,13 @@ private fun week(repo: Repo, template: List<TemplateItem>, id: String, date: Str
 @Composable
 fun CompactTileView(s: TileSummary, w: Int, h: Int) {
     // 5.47: вид — от ширины (1…6 клеток) и высоты (1…3 строки): чем больше плитка, тем больше деталей
-    val acc = s.accent
     val cs = MaterialTheme.colorScheme
-    val fg = if (acc) cs.onTertiaryContainer else cs.onSurfaceVariant
-    val valueColor = if (acc) cs.onTertiaryContainer else androidx.compose.ui.graphics.Color.Unspecified
-    val bg = if (acc) Modifier.background(cs.tertiaryContainer, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) else Modifier
+    // 5.70: цветная плитка по категории; выделенная (accent) — как раньше, третичным контейнером
+    val tc = if (s.accent) ToneColors(cs.tertiaryContainer, cs.onTertiaryContainer) else toneColors(s.tone)
+    val acc = tc != null
+    val fg = tc?.onContainer ?: cs.onSurfaceVariant
+    val valueColor = tc?.onContainer ?: androidx.compose.ui.graphics.Color.Unspecified
+    val bg = if (tc != null) Modifier.background(tc.container, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) else Modifier
     val ty = MaterialTheme.typography
     val lines = s.sub.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
     val hasSpark = s.spark.count { it != null } >= 2

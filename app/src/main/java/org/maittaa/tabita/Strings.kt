@@ -2483,4 +2483,8 @@ val EN: Map<String, String> = mapOf(
     "короткий писк, у отдыха — звук уведомления" to "a short beep; for rest, the notification sound",
     "выбрать из звуков уведомлений и будильников" to "choose from notification and alarm sounds",
     "Звук играет как будильник — его слышно, даже если звук медиа выключен, — и не дольше 6 секунд." to "The sound plays as an alarm — you hear it even with media sound off — and for no longer than 6 seconds.",
+    "Цветные плитки в духе Material You: сон, шаги, пульс, вес, вода, еда, тренировка, финансы и другие плитки «Сегодня» и разделы «Здоровья» — каждая своим цветом. Оттенки гармонизированы с акцентным цветом и обоями, как в приложениях Google, текст на плитках остаётся контрастным" to "Colourful tiles in the Material You spirit: sleep, steps, heart rate, weight, water, food, workout, finances and other “Today” tiles and “Health” sections each get their own colour. The hues are harmonised with your accent colour and wallpaper, as in Google apps, and text on the tiles stays high‑contrast",
+    "Большие плитки получают мягкий оттенок своей категории; всё можно вернуть к спокойному виду переключателем «Цветные плитки» в «Оформлении»" to "Large tiles get a soft tint of their category; switch everything back to the calm look with “Colourful tiles” in “Appearance”",
+    "Цветные плитки" to "Colourful tiles",
+    "Сон, шаги, пульс, вес, вода, еда и другие плитки — каждая своим цветом. Оттенки подстраиваются под акцентный цвет и обои, как в приложениях Google." to "Sleep, steps, heart rate, weight, water, food and other tiles each get their own colour. The hues follow your accent colour and wallpaper, as in Google apps.",
 )

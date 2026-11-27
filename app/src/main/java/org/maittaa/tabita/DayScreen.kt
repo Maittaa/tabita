@@ -168,7 +168,7 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
             val tick = rememberTick(act.prefs.tipsEvery * 1000L)
             val slow = rememberTick(300_000)
             val s = remember(tick, slow, day, template, dateStr) { tileSummary(repo, template, id, day, dateStr, act.prefs, tick) }
-            androidx.compose.animation.Crossfade(s, label = "tipTile") { CompactTileView(it, w, h) }
+            androidx.compose.animation.Crossfade(s.copy(tone = Tone.TERTIARY), label = "tipTile") { CompactTileView(it, w, h) }
         } else if (template.any { it.id == id && it.type == ItemType.RHYTHM } && date == LocalDate.now()) {
             // 5.43: ритм — картинкой (круг или полоса), обновляется раз в минуту
             val minute = rememberTick(60_000)
@@ -178,7 +178,8 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
             val plan = remember(minute, entries) { runCatching { DayPlan.of(repo, act.prefs, date, r) }.getOrNull() }
             RhythmCompact(name, r, now, w, h, act.prefs.rhythmView != "chart", plan)
         } else CompactTileView(tileSummary(repo, template, id, day, dateStr, act.prefs, train = act.train)
-            .copy(actions = if (editing) emptyList() else quickActions(act, repo, template, id, day, dateStr)), w, h)
+            .copy(actions = if (editing) emptyList() else quickActions(act, repo, template, id, day, dateStr),
+                tone = template.firstOrNull { it.id == id }?.let(::toneOf)), w, h)
     }
 
     Column(modifier.fillMaxSize().imePadding()) {
@@ -304,7 +305,12 @@ fun DayScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Unit) {
                     else popup = id
                     Log.d("Day", "открыта плитка $id")
                 },
-                full = { id -> FullTile(id) },
+                full = { id ->
+                    // 5.70: большие плитки — мягкий оттенок категории
+                    val tone = if (groups.any { it.id == id }) Tone.SECONDARY else template.firstOrNull { it.id == id }?.let(::toneOf)
+                    val tc = toneColors(tone)?.soft(MaterialTheme.colorScheme.surfaceContainerLow)
+                    Box(if (tc != null) Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).background(tc.container) else Modifier) { FullTile(id) }
+                },
                 compact = { id, w, h -> CompactTile(id, w, h) },
             )
             Column(Modifier.padding(horizontal = 12.dp)) {

@@ -3,6 +3,11 @@
 [Русская версия](CHANGELOG.md)
 
 
+## 5.70
+
+- Colourful tiles in the Material You spirit: sleep, steps, heart rate, weight, water, food, workout, finances and other “Today” tiles and “Health” sections each get their own colour. The hues are harmonised with your accent colour and wallpaper, as in Google apps, and text on the tiles stays high‑contrast
+- Large tiles get a soft tint of their category; switch everything back to the calm look with “Colourful tiles” in “Appearance”
+
 ## 5.69
 
 - The timer sound is now chosen from Android’s own sounds: “Personalisation” → “Timer sound” → “Android sound” opens the system picker for notification and alarm sounds, with a play button next to it. The synthesised bells from 5.68 are removed; if you chose one, you are back on “Simple beep”

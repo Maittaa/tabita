@@ -382,6 +382,11 @@ class Prefs(context: Context) {
         get() = sp.getString("bell", Bells.SIMPLE) ?: Bells.SIMPLE
         set(v) = sp.edit().putString("bell", v).apply()
 
+    /** 5.70: цветные плитки по смыслу (сон, шаги, пульс…) в цветах Material You. */
+    var colorTiles: Boolean
+        get() = sp.getBoolean("colorTiles", true)
+        set(v) = sp.edit().putBoolean("colorTiles", v).apply()
+
     var motivOn: Boolean
         get() = sp.getBoolean("motOn", false)
         set(v) = sp.edit().putBoolean("motOn", v).apply()

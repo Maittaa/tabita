@@ -248,7 +248,7 @@ private fun StrengthTile(act: MainActivity, onOpen: () -> Unit) {
         draft != null -> cs.tertiaryContainer to cs.onTertiaryContainer
         r?.intensity == Intensity.RECOVERY -> cs.errorContainer to cs.onErrorContainer
         r?.intensity == Intensity.LIGHT -> cs.tertiaryContainer to cs.onTertiaryContainer
-        else -> cs.secondaryContainer to cs.onSecondaryContainer
+        else -> (toneColors(Tone.TRAIN)?.let { it.container to it.onContainer } ?: (cs.secondaryContainer to cs.onSecondaryContainer))
     }
     HubTile(t("Силовая"), Icons.Filled.FitnessCenter, bg, fg, "hub_strength", Modifier.fillMaxWidth(), onOpen) {
         when {
@@ -291,7 +291,7 @@ private fun CardioTile(act: MainActivity, modifier: Modifier, onOpen: () -> Unit
         Cardio.week(Cardio.sessions(act.repo, Cardio.weekStart(today), today), Cardio.weekStart(today), z)
     }
     val running = CardioDraft.parse(act.prefs.cardioDraft)?.takeIf { !it.yoga }
-    HubTile(t("Аэробика"), Icons.Filled.Favorite, cs.surfaceContainerHigh, cs.onSurface, "hub_cardio", modifier, onOpen) {
+    HubTile(t("Аэробика"), Icons.Filled.Favorite, hubC(Tone.HEART), hubF(Tone.HEART), "hub_cardio", modifier, onOpen) {
         if (running != null) {
             Big(t("Идёт"))
             Small(running.title)
@@ -311,7 +311,7 @@ private fun YogaTile(act: MainActivity, modifier: Modifier, onOpen: () -> Unit) 
     val wk = remember(entries) { Cardio.week(Cardio.sessions(act.repo, Cardio.weekStart(today), today) { it.kind in Yoga.kinds }, Cardio.weekStart(today), null) }
     val running = CardioDraft.parse(act.prefs.cardioDraft)?.takeIf { it.yoga }
     val due = Yoga.checkDue(Yoga.parseChecks(act.prefs.yogaChecks))
-    HubTile(t("Йога"), Icons.Filled.SelfImprovement, cs.surfaceContainerHigh, cs.onSurface, "hub_yoga", modifier, onOpen) {
+    HubTile(t("Йога"), Icons.Filled.SelfImprovement, hubC(Tone.CALM), hubF(Tone.CALM), "hub_yoga", modifier, onOpen) {
         if (running != null) { Big(t("Идёт")); Small(running.title) }
         else {
             Big("${wk.minutes}", t("мин"))
@@ -331,7 +331,7 @@ private fun WellbeingTile(act: MainActivity, modifier: Modifier, onOpen: () -> U
     val due = !takenToday && left <= 0
     val draft = act.prefs.wbDraft != null
     val last = checkups.maxByOrNull { it.at }
-    val (bg, fg) = if (due || draft) cs.tertiaryContainer to cs.onTertiaryContainer else cs.surfaceContainerHigh to cs.onSurface
+    val (bg, fg) = if (due || draft) cs.tertiaryContainer to cs.onTertiaryContainer else hubC(Tone.MIND) to hubF(Tone.MIND)
     HubTile(t("Самочувствие"), Icons.Filled.Psychology, bg, fg, "hub_wb", modifier, onOpen) {
         val overall = last?.overall
         if (overall != null) Big("${Math.round(overall)}", t("из 100 · общая оценка"))
@@ -413,7 +413,7 @@ private fun SleepTile(act: MainActivity, modifier: Modifier, onOpen: () -> Unit)
     val entries = collect(act.repo.entries)
     val nights = remember(entries) { SleepStats.nights(act.repo) }
     val sri = remember(nights) { SleepStats.sri(nights) }
-    HubTile(t("Сон"), Icons.Filled.Bedtime, cs.surfaceContainerHigh, cs.onSurface, "hub_sleep", modifier, onOpen) {
+    HubTile(t("Сон"), Icons.Filled.Bedtime, hubC(Tone.SLEEP), hubF(Tone.SLEEP), "hub_sleep", modifier, onOpen) {
         val last = nights.lastOrNull()
         if (last == null) { Big(t("Нет данных")); Small(t("Ночи с часов: время, фазы и регулярность сна")) }
         else {
@@ -432,7 +432,7 @@ private fun BodyTile(act: MainActivity, modifier: Modifier, onOpen: () -> Unit) 
     val w = remember(entries) { BodyLog.change(BodyLog.scaleSeries(act.repo, "weight")) }
     val waist = remember(entries) { BodyLog.change(BodyLog.series(act.repo, "waist")) }
     val shot = remember(entries) { BodyLog.shots(act.repo).lastOrNull()?.first }
-    HubTile(t("Тело"), Icons.Filled.Straighten, cs.surfaceContainerHigh, cs.onSurface, "hub_body", modifier, onOpen) {
+    HubTile(t("Тело"), Icons.Filled.Straighten, hubC(Tone.BODY), hubF(Tone.BODY), "hub_body", modifier, onOpen) {
         if (w == null && waist == null && shot == null) {
             Big(t("Нет данных"))
             Small(t("Вес и состав с весов, замеры лентой и фото прогресса"))
@@ -455,7 +455,7 @@ private fun ActivityTile(act: MainActivity, modifier: Modifier, onOpen: () -> Un
     val byHeart = ActiveMin.weekTotal(entries, start)
     val sessions = remember(entries) { Cardio.week(Cardio.sessions(act.repo, start, today), start, HrZones.of(act.repo, act.prefs)) }
     val total = byHeart ?: sessions.active.takeIf { sessions.activeKnown }
-    HubTile(t("Активность"), Icons.AutoMirrored.Filled.DirectionsWalk, cs.surfaceContainerHigh, cs.onSurface, "hub_activity", modifier, onOpen) {
+    HubTile(t("Активность"), Icons.AutoMirrored.Filled.DirectionsWalk, hubC(Tone.STEPS), hubF(Tone.STEPS), "hub_activity", modifier, onOpen) {
         if (total == null) {
             Big(t("Нет данных"))
             Small(t("Активные минуты считаются по пульсу с часов или по отметкам после занятий"))
@@ -466,3 +466,10 @@ private fun ActivityTile(act: MainActivity, modifier: Modifier, onOpen: () -> Un
         }
     }
 }
+
+/** 5.70: цвет плитки раздела — категория в цветах Material You или нейтральный, если цветные плитки выключены. */
+@Composable
+private fun hubC(t: Tone): Color = toneColors(t)?.container ?: MaterialTheme.colorScheme.surfaceContainerHigh
+
+@Composable
+private fun hubF(t: Tone): Color = toneColors(t)?.onContainer ?: MaterialTheme.colorScheme.onSurface
