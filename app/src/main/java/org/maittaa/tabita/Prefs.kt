@@ -377,6 +377,11 @@ class Prefs(context: Context) {
         get() = sp.getInt("msSeen", 0)
         set(v) = sp.edit().putInt("msSeen", v).apply()
 
+    /** 5.68: колокольчик окончания таймеров: id из Bells.all или Bells.SIMPLE. */
+    var bell: String
+        get() = sp.getString("bell", Bells.DEFAULT) ?: Bells.DEFAULT
+        set(v) = sp.edit().putString("bell", v).apply()
+
     var motivOn: Boolean
         get() = sp.getBoolean("motOn", false)
         set(v) = sp.edit().putBoolean("motOn", v).apply()

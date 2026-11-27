@@ -13,7 +13,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -114,6 +113,9 @@ class TimerService : Service() {
         val label = RestTimer.state.value?.label ?: ""
         RestTimer.finished()
         vibrate()
+        // 5.68: колокольчик из настроек; «Простой сигнал» — системный звук уведомления, как раньше
+        val bell = org.maittaa.tabita.Prefs(this).bell
+        if (bell == org.maittaa.tabita.Bells.SIMPLE) org.maittaa.tabita.Bells.playSystem(this) else org.maittaa.tabita.Bells.play(this, bell)
         val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT < 33 ||
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -152,23 +154,21 @@ class TimerService : Service() {
 
     companion object {
         const val CH_RUN = "rest_running"
-        const val CH_DONE = "rest_done_v1"
+        const val CH_DONE = "rest_done_v2"
         const val NOTIF_RUN = 1
         const val NOTIF_DONE = 2
 
         fun createChannels(ctx: Context) {
             val nm = ctx.getSystemService(NotificationManager::class.java)
+            runCatching { nm.deleteNotificationChannel("rest_done_v1") }
             nm.createNotificationChannel(
                 NotificationChannel(CH_RUN, "Таймер отдыха", NotificationManager.IMPORTANCE_LOW)
                     .apply { setShowBadge(false) },
             )
             nm.createNotificationChannel(
+                // 5.68: канал без звука — звенит колокольчик из настроек (Bells), канал v1 со звуком удаляется
                 NotificationChannel(CH_DONE, "Отдых окончен", NotificationManager.IMPORTANCE_HIGH).apply {
-                    setSound(
-                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-                        AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
-                    )
+                    setSound(null, null)
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 400, 200, 400)
                 },

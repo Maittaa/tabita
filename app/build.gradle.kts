@@ -12,8 +12,8 @@ android {
         applicationId = "org.maittaa.tabita"
         minSdk = 28
         targetSdk = 35
-        versionCode = 94
-        versionName = "5.67"
+        versionCode = 95
+        versionName = "5.68"
     }
 
     signingConfigs {

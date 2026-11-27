@@ -1,5 +1,17 @@
 package org.maittaa.tabita
 
+import androidx.compose.ui.platform.testTag
+
+import androidx.compose.runtime.DisposableEffect
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+
+import androidx.compose.material3.RadioButton
+
+import androidx.compose.material.icons.filled.PlayArrow
+
+import androidx.compose.material.icons.filled.NotificationsActive
+
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.filled.BookmarkAdded
@@ -468,6 +480,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
         }
             "rhythm" -> RhythmSettings(repo, prefs)
             "profile" -> ProfileBody(repo)
+            "bells" -> BellsBody(act)
             "lang" -> {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("" to t("Как в системе"), "ru" to "Русский", "en" to "English").forEach { (code, title) ->
@@ -800,6 +813,8 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
             SetRow("rhythm", Icons.Filled.Schedule, t("Ритм дня"),
                 listOfNotNull(if (prefs.rhythmView == "chart") t("дорожками") else t("кругом"),
                     if (prefs.rhythmStrip) t("полоса над плитками") else null).joinToString(" · ")),
+            SetRow("bells", Icons.Filled.NotificationsActive, t("Звук таймеров"),
+                Bells.of(prefs.bell)?.let { t(it.name) } ?: t("Простой сигнал")),
             SetRow("profile", Icons.Filled.Person, t("Профиль: рост и возраст"), profileSummary(profile)),
             SetRow("lang", Icons.Filled.Language, t("Язык и валюта"),
                 (when (prefs.lang) { "ru" -> "Русский"; "en" -> "English"; else -> t("Как в системе") }) + " · " + prefs.currency),
@@ -1072,4 +1087,32 @@ private fun bodyIds(repo: Repo, itemId: String): List<Pair<String, BodyMetric>> 
     val m = LinkedHashMap<String, BodyMetric>()
     repo.entries.value.toSortedMap().values.forEach { d -> BodyDay.parse(d[itemId])?.metrics?.forEach { m.putIfAbsent(it.id, it) } }
     return m.entries.map { it.key to it.value }
+}
+
+/** 5.68: выбор колокольчика окончания таймеров; касание — выбрать и прослушать. */
+@Composable
+internal fun BellsBody(act: MainActivity) {
+    var cur by remember { mutableStateOf(act.prefs.bell) }
+    DisposableEffect(Unit) { onDispose { Bells.stop() } }
+    Column {
+        Text(t("Звучит, когда заканчивается отдых между подходами, упражнение на время в силовой и каждый блок аэробной тренировки и йоги."),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        val options = Bells.all.map { it.id to t(it.name) } + (Bells.SIMPLE to t("Простой сигнал"))
+        options.forEach { (id, name) ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable {
+                    cur = id; act.prefs.bell = id
+                    if (id == Bells.SIMPLE) Bells.playSystem(act) else Bells.play(act, id)
+                }.padding(vertical = 2.dp).testTag("bell_$id"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = cur == id, onClick = null)
+                Spacer(Modifier.width(8.dp))
+                Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Icon(Icons.Filled.PlayArrow, t("Прослушать"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
+            }
+        }
+        Hint(t("Громкость — как у будильника: колокольчик слышно, даже если звук медиа выключен. «Простой сигнал» — короткий писк и системный звук уведомления, как было раньше."))
+    }
 }

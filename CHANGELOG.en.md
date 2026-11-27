@@ -3,6 +3,11 @@
 [Русская версия](CHANGELOG.md)
 
 
+## 5.68
+
+- Timer sound in “Personalisation”: five bells — “Hand bell”, “Singing bowl”, “Wind chimes”, “Ding-dong”, “Glockenspiel” — plus “Simple beep” as before. Tap to choose and hear it right away
+- The bell rings when rest between sets ends, when a timed strength exercise ends, and at every cardio and yoga block; it plays as an alarm, so you hear it even with media sound off
+
 ## 5.67
 
 - Gentle return: if the streak broke, “Today” greets you without blame — how long the break was, that occasional misses barely affect habit forming, and that your freezes are kept
