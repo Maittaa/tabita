@@ -113,9 +113,8 @@ class TimerService : Service() {
         val label = RestTimer.state.value?.label ?: ""
         RestTimer.finished()
         vibrate()
-        // 5.68: колокольчик из настроек; «Простой сигнал» — системный звук уведомления, как раньше
-        val bell = org.maittaa.tabita.Prefs(this).bell
-        if (bell == org.maittaa.tabita.Bells.SIMPLE) org.maittaa.tabita.Bells.playSystem(this) else org.maittaa.tabita.Bells.play(this, bell)
+        // звук из настроек; «Простой сигнал» — системный звук уведомления, как раньше
+        org.maittaa.tabita.Bells.play(this)
         val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT < 33 ||
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -166,7 +165,7 @@ class TimerService : Service() {
                     .apply { setShowBadge(false) },
             )
             nm.createNotificationChannel(
-                // 5.68: канал без звука — звенит колокольчик из настроек (Bells), канал v1 со звуком удаляется
+                // 5.68: канал без звука — звучит выбранный в настройках звук (Bells), канал v1 со звуком удаляется
                 NotificationChannel(CH_DONE, "Отдых окончен", NotificationManager.IMPORTANCE_HIGH).apply {
                     setSound(null, null)
                     enableVibration(true)

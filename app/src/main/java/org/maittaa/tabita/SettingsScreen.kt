@@ -814,7 +814,7 @@ fun SettingsScreen(act: MainActivity, modifier: Modifier, notify: (String) -> Un
                 listOfNotNull(if (prefs.rhythmView == "chart") t("дорожками") else t("кругом"),
                     if (prefs.rhythmStrip) t("полоса над плитками") else null).joinToString(" · ")),
             SetRow("bells", Icons.Filled.NotificationsActive, t("Звук таймеров"),
-                Bells.of(prefs.bell)?.let { t(it.name) } ?: t("Простой сигнал")),
+                Bells.title(act, prefs.bell)),
             SetRow("profile", Icons.Filled.Person, t("Профиль: рост и возраст"), profileSummary(profile)),
             SetRow("lang", Icons.Filled.Language, t("Язык и валюта"),
                 (when (prefs.lang) { "ru" -> "Русский"; "en" -> "English"; else -> t("Как в системе") }) + " · " + prefs.currency),
@@ -1089,30 +1089,43 @@ private fun bodyIds(repo: Repo, itemId: String): List<Pair<String, BodyMetric>> 
     return m.entries.map { it.key to it.value }
 }
 
-/** 5.68: выбор колокольчика окончания таймеров; касание — выбрать и прослушать. */
+/** 5.69: звук окончания таймеров — простой сигнал или любой звук Android из системного окна выбора. */
 @Composable
 internal fun BellsBody(act: MainActivity) {
     var cur by remember { mutableStateOf(act.prefs.bell) }
     DisposableEffect(Unit) { onDispose { Bells.stop() } }
+    val pick = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) { res -> Bells.fromPicker(res.data)?.let { cur = it; act.prefs.bell = it } }
+    val system = !Bells.isSimple(cur)
     Column {
         Text(t("Звучит, когда заканчивается отдых между подходами, упражнение на время в силовой и каждый блок аэробной тренировки и йоги."),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(6.dp))
-        val options = Bells.all.map { it.id to t(it.name) } + (Bells.SIMPLE to t("Простой сигнал"))
-        options.forEach { (id, name) ->
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable {
-                    cur = id; act.prefs.bell = id
-                    if (id == Bells.SIMPLE) Bells.playSystem(act) else Bells.play(act, id)
-                }.padding(vertical = 2.dp).testTag("bell_$id"),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = cur == id, onClick = null)
-                Spacer(Modifier.width(8.dp))
-                Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                Icon(Icons.Filled.PlayArrow, t("Прослушать"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { cur = Bells.SIMPLE; act.prefs.bell = Bells.SIMPLE }
+            .padding(vertical = 2.dp).testTag("bell_simple"), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = !system, onClick = null)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t("Простой сигнал"), style = MaterialTheme.typography.bodyLarge)
+                Text(t("короткий писк, у отдыха — звук уведомления"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Hint(t("Громкость — как у будильника: колокольчик слышно, даже если звук медиа выключен. «Простой сигнал» — короткий писк и системный звук уведомления, как было раньше."))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable {
+                runCatching { pick.launch(Bells.pickerIntent(act, cur)) }.onFailure { Log.e("Settings", "нет окна выбора звука", it) }
+            }.padding(vertical = 2.dp).testTag("bell_system"), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = system, onClick = null)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t("Звук Android"), style = MaterialTheme.typography.bodyLarge)
+                Text(if (system) Bells.title(act, cur) else t("выбрать из звуков уведомлений и будильников"),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("bell_title"))
+            }
+            if (system) IconButton({ Bells.play(act, cur) }, Modifier.testTag("bell_play")) {
+                Icon(Icons.Filled.PlayArrow, t("Прослушать"), tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Hint(t("Звук играет как будильник — его слышно, даже если звук медиа выключен, — и не дольше 6 секунд."))
     }
 }

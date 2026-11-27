@@ -3,6 +3,11 @@
 [Русская версия](CHANGELOG.md)
 
 
+## 5.69
+
+- The timer sound is now chosen from Android’s own sounds: “Personalisation” → “Timer sound” → “Android sound” opens the system picker for notification and alarm sounds, with a play button next to it. The synthesised bells from 5.68 are removed; if you chose one, you are back on “Simple beep”
+- The chosen sound plays as an alarm and for no longer than 6 seconds, so a long tune does not get in the way of the next set
+
 ## 5.68
 
 - Timer sound in “Personalisation”: five bells — “Hand bell”, “Singing bowl”, “Wind chimes”, “Ding-dong”, “Glockenspiel” — plus “Simple beep” as before. Tap to choose and hear it right away

@@ -377,9 +377,9 @@ class Prefs(context: Context) {
         get() = sp.getInt("msSeen", 0)
         set(v) = sp.edit().putInt("msSeen", v).apply()
 
-    /** 5.68: колокольчик окончания таймеров: id из Bells.all или Bells.SIMPLE. */
+    /** Звук окончания таймеров: Bells.SIMPLE или URI системного звука (5.69; значения bell_* от 5.68 = простой сигнал). */
     var bell: String
-        get() = sp.getString("bell", Bells.DEFAULT) ?: Bells.DEFAULT
+        get() = sp.getString("bell", Bells.SIMPLE) ?: Bells.SIMPLE
         set(v) = sp.edit().putString("bell", v).apply()
 
     var motivOn: Boolean

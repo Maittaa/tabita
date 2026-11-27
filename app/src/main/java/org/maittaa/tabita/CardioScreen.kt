@@ -585,8 +585,8 @@ fun CardioTimer(act: MainActivity, dr: CardioDraft, d: CardioData, save: (Cardio
     LaunchedEffect(cur?.first, dr.paused) {
         val idx = cur?.first ?: blocks.size
         if (!dr.paused && dr.mode != CardioPlans.Mode.VIDEO && lastIdx >= 0 && idx != lastIdx) {
-            // 5.68: смена блока — колокольчик из настроек («Простой сигнал» — как раньше)
-            if (act.prefs.bell == Bells.SIMPLE) runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP2, 400) } else Bells.play(act)
+            // смена блока — звук из настроек («Простой сигнал» — писк, как раньше)
+            if (Bells.isSimple(act.prefs.bell)) runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP2, 400) } else Bells.play(act)
             runCatching { vib?.vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE)) }
         }
         lastIdx = idx

@@ -341,8 +341,8 @@ private fun WarmView(m: AppModel, step: Step.Warm, showInfo: (String, String?) -
             if (left in 1..3) beep(ctx, short = true)
             if (left == 0) {
                 running = false
-                // 5.68: время вышло — колокольчик из настроек («Простой сигнал» — как раньше)
-                if (org.maittaa.tabita.Prefs(ctx).bell == org.maittaa.tabita.Bells.SIMPLE) beep(ctx, short = false) else org.maittaa.tabita.Bells.play(ctx)
+                // время вышло — звук из настроек («Простой сигнал» — писк, как раньше)
+                if (org.maittaa.tabita.Bells.isSimple(org.maittaa.tabita.Prefs(ctx).bell)) beep(ctx, short = false) else org.maittaa.tabita.Bells.play(ctx)
                 ctx.getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
                 autoNext = 3
             }

@@ -4,7 +4,7 @@
 
 **A personal health and habit diary for Android.** One app instead of several: a daily checklist, food, sleep, workouts, weight and body measurements, wellbeing and spending. Data from your watch and scale comes in automatically, and the app shows what actually affects how you feel.
 
-Version **5.68** · Android 9+ · Russian and English interface (the strength training section is Russian only for now)
+Version **5.69** · Android 9+ · Russian and English interface (the strength training section is Russian only for now)
 
 **Download:** the latest APK is in [Releases](https://github.com/Maittaa/tabita/releases/latest). It installs as an update over the existing version.
 
@@ -66,7 +66,7 @@ Version **5.68** · Android 9+ · Russian and English interface (the strength tr
 - A recording streak with freezes and a soft “N of 7” streak; a gentle return after a break.
 - Milestones at 14, 30 and 66 filled days.
 - A bedtime reminder; a reminder to rebuild the training programme.
-- Five bells for when timers end (rest, timed exercises, cardio and yoga blocks), with a preview in settings.
+- A sound for when timers end (rest, timed exercises, cardio and yoga blocks) — any Android sound from the system picker.
 
 ### Data and privacy
 - All data is stored locally, with format migrations between versions.
